@@ -457,3 +457,474 @@ def on_close():
 # Asociar callback de cierre y arrancar loop Tkinter
 window.protocol("WM_DELETE_WINDOW", on_close)
 window.mainloop()
+
+
+
+
+
+CODIGO COMENTADO
+import serial
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from tkinter import *
+from tkinter import messagebox
+import math
+import time
+
+# =================== Configuración puerto ===================
+# Aquí se define el puerto serie donde está conectada la estación de tierra
+# Cambia 'COM5' por el puerto correcto en tu sistema (ej. '/dev/ttyUSB0' en Linux).
+device = 'COM5'  # Cambia al puerto correcto si hace falta
+# Se abre el puerto serie con 9600 baudios y timeout 1s.
+# El timeout evita bloqueos en read; in_waiting se usa para ver si hay bytes.
+mySerial = serial.Serial(device, 9600, timeout=1)
+
+# =================== Variables de datos ===================
+# Listas para almacenar lecturas de DHT y eje temporal (muestras)
+temperaturas = []
+humedades = []
+eje_x = []
+media_movil = []
+
+# Flags y parámetros de control de alertas y ventanas
+alerta_activa = False           # alerta basada en 3 últimas temperaturas individuales
+alerta_media_activa = False     # alerta basada en 3 últimas medias móviles
+limite_temp = 30.0              # umbral por defecto (°C)
+ventana_default = 10            # N por defecto para media móvil
+i = 0                           # contador incremental de muestras (eje_x)
+lectura_activa = False          # flag que indica si el bucle de lectura está activo
+
+# Listas para radar (ultrasonidos): ángulos y distancias
+radar_angulos = []
+radar_distancias = []
+RADAR_MAX_POINTS = 3   # cuántos puntos mantenemos en el radar (historico corto)
+last_angle_received = None  # almacena el último ángulo válido recibido
+modo_media = "python"  # 'python' (calcular media localmente) o 'arduino' (recibida desde Arduino)
+
+# Control de intervalo DHT en Python (evitar procesar/mostrar cada paquete si llegan muy rápido)
+# Se compara con time.time()*1000 para decidir si aceptar una lectura DHT recibida.
+last_dht_accepted_ms = 0
+
+# =================== Ventana principal (Tkinter) ===================
+# Creamos la ventana principal de la interfaz con título y tamaño.
+window = Tk()
+window.title("Ground Station - Radar + Gráficas (v2.4)")
+window.geometry("1400x850")
+
+# =================== Figuras (Matplotlib) ===================
+# Creamos la figura con subplots: temperatura, humedad, media y radar polar.
+fig = plt.figure(figsize=(10, 8))
+ax1 = fig.add_subplot(3, 2, 1)                   # temperatura
+ax2 = fig.add_subplot(3, 2, 3)                   # humedad
+ax3 = fig.add_subplot(3, 2, 5)                   # media móvil
+ax_radar = fig.add_subplot(1, 2, 2, polar=True)  # radar polar (ultrasonidos)
+
+# =================== Líneas de gráficas (líneas continuas, sin puntos) ===================
+# Inicializamos las "líneas" en blanco; los objetos line_* nos permiten
+# actualizar los datos más tarde con set_data(...) sin recrear el plot.
+line_temp, = ax1.plot([], [], linestyle='-', marker=None, color='red', label="Temperatura")
+ax1.set_title("Temperatura (°C)")
+ax1.grid(True)
+ax1.legend()
+
+line_hum, = ax2.plot([], [], linestyle='-', marker=None, color='blue', label="Humedad")
+ax2.set_title("Humedad (%)")
+ax2.grid(True)
+ax2.legend()
+
+line_avg, = ax3.plot([], [], linestyle='-', marker=None, color='green', label="Media móvil")
+ax3.set_title("Media móvil")
+ax3.grid(True)
+ax3.legend()
+
+# =================== Config radar ===================
+# Ajustes visuales del radar: fondo, orientación y límites radiales.
+ax_radar.set_facecolor("black")
+ax_radar.set_theta_zero_location('N')   # 0° arriba (Norte)
+ax_radar.set_theta_direction(-1)        # sentido horario para ángulos
+ax_radar.set_rlim(0, 400)               # rango radial (cm) acorde a HC-SR04
+ax_radar.set_thetamin(0)
+ax_radar.set_thetamax(180)              # solo medio arco (0..180)
+
+# Integración de Matplotlib dentro de Tkinter
+canvas = FigureCanvasTkAgg(fig, master=window)
+canvas.draw()
+canvas.get_tk_widget().grid(row=0, column=0, rowspan=20, padx=10, pady=10)
+
+# =================== Panel de controles (Tkinter) ===================
+controls_frame = Frame(window)
+controls_frame.grid(row=0, column=1, sticky=N, padx=12)
+
+# --- Encabezado ---
+Label(controls_frame, text="Ground Station v2.4", font=("Courier", 18, "italic")).grid(row=0, column=0, pady=(0,10))
+
+# --- Límite de temperatura (entrada de usuario) ---
+Label(controls_frame, text="Límite temperatura (°C):").grid(row=1, column=0, sticky=W)
+limiteVar = StringVar(value=str(limite_temp))
+Entry(controls_frame, textvariable=limiteVar, width=10).grid(row=2,column=0, sticky=W)
+
+# --- Ventana N para media móvil ---
+Label(controls_frame, text="Ventana media móvil (N):").grid(row=3,column=0, sticky=W)
+ventanaVar = IntVar(value=ventana_default)
+Spinbox(controls_frame, from_=1, to=200, textvariable=ventanaVar, width=6).grid(row=4,column=0, sticky=W)
+
+# --- Intervalo DHT (el usuario pide cada cuántos segundos desea recibir/aceptar lecturas) ---
+Label(controls_frame, text="Intervalo envío DHT (s):").grid(row=5,column=0, sticky=W, pady=(6,0))
+intervaloDHTVar = IntVar(value=3)
+Spinbox(controls_frame, from_=1, to=3600, textvariable=intervaloDHTVar, width=6).grid(row=6,column=0, sticky=W)
+
+def send_intervalo_dht():
+    """
+    Envía al satélite/Arduino el comando para cambiar el intervalo de envío DHT.
+    Formato: "1:<segundos>\n"
+    """
+    try:
+        s = int(intervaloDHTVar.get())
+        mySerial.write(f"1:{s}\n".encode())
+        print("Enviado intervalo DHT:", s)
+    except Exception:
+        # Mensaje de error si el valor no es válido
+        messagebox.showerror("Error", "Intervalo DHT inválido")
+
+Button(controls_frame, text="Enviar intervalo DHT", command=send_intervalo_dht, width=18).grid(row=7,column=0,pady=(4,8))
+
+# --- Intervalo ultrasonidos (ms) ---
+Label(controls_frame, text="Intervalo ultrasonidos (ms):").grid(row=8,column=0, sticky=W)
+intervaloUltraVar = IntVar(value=500)
+Spinbox(controls_frame, from_=50, to=10000, textvariable=intervaloUltraVar, width=8).grid(row=9,column=0, sticky=W)
+
+def send_intervalo_ultra():
+    """
+    Envía al satélite/Arduino el comando para cambiar el intervalo de barrido ultrasónico.
+    Formato: "7:<ms>\n"
+    """
+    try:
+        ms = int(intervaloUltraVar.get())
+        mySerial.write(f"7:{ms}\n".encode())
+        print("Enviado intervalo ultrasonidos (ms):", ms)
+    except Exception:
+        messagebox.showerror("Error", "Intervalo ultrasonidos inválido")
+
+Button(controls_frame, text="Enviar intervalo ultrasonidos", command=send_intervalo_ultra, width=18).grid(row=10,column=0,pady=(4,8))
+
+# --- Dónde calcular la media: Python o Arduino ---
+Label(controls_frame, text="Dónde calcular la media:").grid(row=11,column=0, sticky=W)
+modoVar = StringVar(value="python")
+
+def modo_media_changed():
+    """
+    Al cambiar modo, se notifica al Arduino con 8:1 (activar) o 8:0 (desactivar),
+    y además se envía la ventana N con 9:N cuando se selecciona Arduino.
+    """
+    global modo_media
+    modo_media = modoVar.get()
+    if modo_media == "arduino":
+        mySerial.write(b"8:1\n")
+        # pequeño retardo para que Arduino procese el comando antes del siguiente
+        time.sleep(0.05)
+        n = int(ventanaVar.get())
+        mySerial.write(f"9:{n}\n".encode())
+        print("Modo media: ARDUINO, window N sent:", n)
+    else:
+        mySerial.write(b"8:0\n")
+        print("Modo media: PYTHON")
+
+Radiobutton(controls_frame, text="Python (local)", variable=modoVar, value="python", command=modo_media_changed).grid(row=12,column=0, sticky=W)
+Radiobutton(controls_frame, text="Arduino (remoto)", variable=modoVar, value="arduino", command=modo_media_changed).grid(row=13,column=0, sticky=W)
+
+# --- Control manual servo ---
+Label(controls_frame, text="Ángulo servo (0-180°):").grid(row=14,column=0, sticky=W, pady=(8,0))
+anguloVar = IntVar(value=0)
+Entry(controls_frame, textvariable=anguloVar, width=6).grid(row=15,column=0, sticky=W)
+
+def enviar_angulo():
+    """
+    Envía comando 2:<angulo> al Arduino para mover servo a ángulo manual.
+    Arduino debe detener el barrido cuando reciba este comando.
+    """
+    try:
+        ang = int(anguloVar.get())
+        if 0 <= ang <= 180:
+            mySerial.write(f"2:{ang}\n".encode())
+            print("Enviado ángulo:", ang)
+        else:
+            messagebox.showerror("Error", "Ángulo debe estar entre 0 y 180")
+    except Exception:
+        messagebox.showerror("Error", "Ángulo inválido")
+
+Button(controls_frame, text="Enviar ángulo", command=enviar_angulo, width=18, bg='cyan').grid(row=16,column=0,pady=(4,6))
+
+# --- Botones para controlar barrido automático (6:1 / 6:0) ---
+def activar_barrido():
+    try: mySerial.write(b"6:1\n")
+    except: pass
+
+def desactivar_barrido():
+    try: mySerial.write(b"6:0\n")
+    except: pass
+
+Button(controls_frame, text="Activar Barrido", command=activar_barrido, width=18, bg='green').grid(row=17,column=0,pady=3)
+Button(controls_frame, text="Detener Barrido", command=desactivar_barrido, width=18, bg='red').grid(row=18,column=0,pady=3)
+
+# --- Indicador de estado de alarma por medias ---
+Label(controls_frame, text="Estado alarma (medias):").grid(row=23, column=0, sticky=W, pady=(8,0))
+alarma_media_label = Label(controls_frame, text="Normal", bg="lightgreen", width=18)
+alarma_media_label.grid(row=24, column=0, pady=(2,8))
+
+# --- Botones iniciar/parar/reanudar/reset ---
+def IniciarClick():
+    """
+    Activa el ciclo de lectura y envía el comando 'Iniciar' al Arduino
+    para que empiece a transmitir datos.
+    """
+    global lectura_activa
+    lectura_activa = True
+    try: mySerial.write(b'Iniciar\n')
+    except: pass
+    ciclo_lectura()
+
+def PararClick():
+    """Detiene el ciclo de lectura y solicita al Arduino parar la transmisión."""
+    global lectura_activa
+    lectura_activa = False
+    try: mySerial.write(b'Parar\n')
+    except: pass
+
+def ReanudarClick():
+    """Reanuda la lectura y envía 'Iniciar' al Arduino."""
+    global lectura_activa
+    lectura_activa = True
+    try: mySerial.write(b'Iniciar\n')
+    except: pass
+    ciclo_lectura()
+
+def ResetClick():
+    """
+    Resetea todos los buffers de datos locales y reactiva el barrido en el satélite.
+    También reinicia estados de alerta y fuerza un redraw completo.
+    """
+    global temperaturas, humedades, eje_x, media_movil, i, radar_angulos, radar_distancias, alerta_activa, alerta_media_activa
+    temperaturas=[]; humedades=[]; eje_x=[]; media_movil=[]; i=0
+    radar_angulos=[]; radar_distancias=[]
+    alerta_activa = False
+    alerta_media_activa = False
+    alarma_media_label.config(text="Normal", bg="lightgreen")
+    try: mySerial.write(b'6:1\n')  # reactivar barrido en Arduino
+    except: pass
+    actualizar_graficas(force=True)
+
+Button(controls_frame, text="Iniciar", bg='green', fg='white', command=IniciarClick, width=18).grid(row=19,column=0,pady=(8,2))
+Button(controls_frame, text="Parar", bg='red', fg='white', command=PararClick, width=18).grid(row=20,column=0,pady=2)
+Button(controls_frame, text="Reanudar", bg='yellow', fg='black', command=ReanudarClick, width=18).grid(row=21,column=0,pady=2)
+Button(controls_frame, text="Reset (reactiva barrido)", bg='gray', fg='white', command=ResetClick, width=18).grid(row=22,column=0,pady=(6,2))
+
+# =================== Funciones de graficado ===================
+def actualizar_graficas(force=False):
+    """
+    Redibuja las gráficas.
+    - Si force==True: redibuja todo.
+    - Si force==False: redibuja radar siempre y las líneas con los datos actuales.
+    Observación: las líneas son continuas (sin markers), colores preservados.
+    """
+    # Actualizar líneas (temperatura/humedad)
+    line_temp.set_data(eje_x, temperaturas)
+    line_hum.set_data(eje_x, humedades)
+    # Ajustar media_plot para que coincida en longitud con eje_x
+    media_plot = [m if (m is not None and not (isinstance(m, float) and math.isnan(m))) else 0 for m in media_movil]
+    line_avg.set_data(eje_x[:len(media_plot)], media_plot)
+
+    # Recalcular límites y escalado automático de ejes para que se ajusten a los nuevos datos
+    ax1.relim(); ax1.autoscale_view()
+    ax2.relim(); ax2.autoscale_view()
+    ax3.relim(); ax3.autoscale_view()
+
+    # Radar: limpiamos y redibujamos con fondo negro y elementos verdes
+    ax_radar.clear()
+    ax_radar.set_facecolor("black")
+    ax_radar.set_theta_zero_location('N')
+    ax_radar.set_theta_direction(-1)
+    ax_radar.set_rlim(0, 400)
+    ax_radar.set_thetamin(0)
+    ax_radar.set_thetamax(180)
+    ax_radar.set_title("Radar ultrasónico", color='lime')
+
+    if radar_angulos:
+        # convertir ángulos a radianes para polar plotting
+        theta = [math.radians(a) for a in radar_angulos]
+        r = radar_distancias
+        # si hay varios puntos, unirlos con una línea fina
+        if len(theta) > 1:
+            ax_radar.plot(theta, r, color='lime', linewidth=1.2, zorder=2)
+        # último punto (más reciente) se dibuja más grande para destacar
+        ax_radar.scatter([theta[-1]], [r[-1]], c='lime', s=100, zorder=4, edgecolors='k')
+
+    # Llamamos draw_idle para actualizar la figura embebida sin bloquear GUI
+    canvas.draw_idle()
+
+# =================== Lectura serie ===================
+def leer_serial():
+    """
+    Lee todas las líneas disponibles del puerto serie.
+    - Radar (2:ang:dist) se procesa siempre y se agrega a radar_angulos/radar_distancias.
+    - DHT (1:temp:hum[:A:avg]) se ACEPTA y almacena solo si ha pasado el intervalo DHT configurado,
+      para evitar saturar la GUI y la radio LoRa.
+    """
+    global i, alerta_activa, alerta_media_activa, last_angle_received, last_dht_accepted_ms
+
+    try:
+        # Mientras haya bytes esperando en el buffer del puerto serie...
+        while mySerial.in_waiting > 0:
+            raw = mySerial.readline().decode('utf-8', errors='ignore').strip()
+            if not raw:
+                continue  # saltar líneas vacías
+            #print("Serie <-", raw)  # útil para depuración
+            trozos = raw.split(':')
+            now_ms = int(time.time()*1000)
+
+            # --- DHT: 1:<temp>:<hum>[:A:<avg>] ---
+            if len(trozos) >= 3 and trozos[0] == '1':
+                # Decidir si aceptamos esta lectura según el intervalo configurado por el usuario
+                try:
+                    intervalo_ms = max(0, int(intervaloDHTVar.get())) * 1000
+                except Exception:
+                    intervalo_ms = 3000  # fallback seguro
+                # Si intervalo_ms == 0 aceptamos todas las lecturas; de lo contrario respetamos el intervalo
+                accept = False
+                if intervalo_ms == 0:
+                    accept = True
+                else:
+                    if now_ms - last_dht_accepted_ms >= intervalo_ms:
+                        accept = True
+
+                if not accept:
+                    # descartamos esta lectura (para no saturar la GUI / LoRa)
+                    # Nota: podrías contar lecturas descartadas si te interesa el logging.
+                    continue
+
+                # Aceptamos la lectura y actualizamos la marca temporal
+                last_dht_accepted_ms = now_ms
+                try:
+                    temperatura = float(trozos[1])
+                    hum = float(trozos[2])
+                except Exception:
+                    # valores inválidos: saltar
+                    continue
+
+                # Append a las listas y actualizar contador
+                eje_x.append(i)
+                temperaturas.append(temperatura)
+                humedades.append(hum)
+                i += 1
+
+                # manejar media según modo (si Arduino envía A:<avg> se usa esa media)
+                N = max(1, int(ventanaVar.get()))
+                if modoVar.get() == "arduino" and len(trozos) >= 5 and trozos[3] == 'A':
+                    try:
+                        avg = float(trozos[4])
+                        media_movil.append(avg)
+                    except Exception:
+                        # fallback: calcular media local
+                        if len(temperaturas) >= N:
+                            media_movil.append(sum(temperaturas[-N:]) / N)
+                        else:
+                            media_movil.append(float('nan'))
+                else:
+                    # modo Python o Arduino sin avg: calcular localmente
+                    if len(temperaturas) >= N:
+                        media_movil.append(sum(temperaturas[-N:]) / N)
+                    else:
+                        media_movil.append(float('nan'))
+
+                # --- Alerta: 3 últimas TEMPERATURAS individuales > límite ---
+                if len(temperaturas) >= 3:
+                    ult3 = temperaturas[-3:]
+                    try:
+                        limite = float(limiteVar.get())
+                    except Exception:
+                        limite = limite_temp
+                    if all(x > limite for x in ult3) and not alerta_activa:
+                        alerta_activa = True
+                        # Mostrar diálogo emergente (bloqueante)
+                        messagebox.showwarning("Alerta", f"Las 3 últimas temperaturas superan {limite} °C")
+                    elif not all(x > limite for x in ult3) and alerta_activa:
+                        alerta_activa = False
+
+                # --- Alerta NUEVA: 3 últimas MEDIAS > límite ---
+                medias_validas = [m for m in media_movil if (m is not None and not (isinstance(m, float) and math.isnan(m)))]
+                if len(medias_validas) >= 3:
+                    last3_medias = medias_validas[-3:]
+                    try:
+                        limite = float(limiteVar.get())
+                    except Exception:
+                        limite = limite_temp
+                    if all(m > limite for m in last3_medias):
+                        if not alerta_media_activa:
+                            alerta_media_activa = True
+                            alarma_media_label.config(text="Peligro", bg="red")
+                            messagebox.showwarning("Alerta MEDIA", f"Las 3 últimas MEDIAS superan {limite} °C")
+                    else:
+                        if alerta_media_activa:
+                            alerta_media_activa = False
+                            alarma_media_label.config(text="Normal", bg="lightgreen")
+
+            # --- Radar ultrasónico: 2:<angulo>:<distancia> ---
+            elif len(trozos) >= 3 and trozos[0] == '2':
+                try:
+                    ang = float(trozos[1])
+                    dist = float(trozos[2])
+                    last_angle_received = ang
+                except Exception:
+                    continue
+                # Validar rango de ángulo (0..180)
+                if ang < 0 or ang > 180:
+                    continue
+                # Almacenar en buffers del radar y mantener solo los últimos RADAR_MAX_POINTS
+                radar_angulos.append(ang)
+                radar_distancias.append(dist)
+                while len(radar_angulos) > RADAR_MAX_POINTS:
+                    radar_angulos.pop(0)
+                    radar_distancias.pop(0)
+
+            else:
+                # Otros códigos (fallos y mensajes informativos) para depuración
+                if trozos[0] == '3':
+                    print("Satélite: fallo DHT")
+                elif trozos[0] == '5':
+                    print("Satélite msg:", ":".join(trozos[1:]))
+                elif trozos[0] == '6':
+                    print("Satélite: fallo sensor distancia")
+                else:
+                    print("Otro mensaje:", raw)
+
+    except serial.SerialException as e:
+        # Manejo básico de excepción del puerto serie (ej. desconexión)
+        print("Error puerto serie:", e)
+
+# =================== Ciclo lectura principal ===================
+def ciclo_lectura():
+    """
+    Ciclo principal que:
+     - lee el buffer del puerto serie con frecuencia para vaciarlo (evita saturación).
+     - acepta lecturas DHT solo cuando haya pasado el intervalo configurado (evita que la GUI se actualice cada paquete).
+     - actualiza las gráficas (radar siempre; líneas cuando haya datos nuevos DHT aceptados).
+    """
+    if lectura_activa:
+        # Vaciar buffer y procesar entradas
+        leer_serial()
+        # Siempre redibujar radar + líneas con datos actuales (las líneas se actualizan si se aceptó DHT)
+        actualizar_graficas()
+        # Programar siguiente lectura rápida (100ms) para mantener buffer vacío y radar responsivo
+        window.after(100, ciclo_lectura)
+
+# =================== Cierre ===================
+def on_close():
+    """Callback para cierre de ventana: cierra puerto serie y destruye GUI."""
+    global lectura_activa
+    lectura_activa = False
+    try: mySerial.close()
+    except: pass
+    window.destroy()
+
+# Asociamos el callback y arrancamos el loop de Tkinter
+window.protocol("WM_DELETE_WINDOW", on_close)
+window.mainloop()
