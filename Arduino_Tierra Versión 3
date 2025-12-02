@@ -1,1 +1,70 @@
+//ESTACION TIERRA
 
+#include <SoftwareSerial.h>
+
+SoftwareSerial satSerial(10, 11); // RX, TX hacia satélite
+
+const int ledRx = 12;     // LED que parpadea al recibir datos
+const int ledAlerta = 13; // LED de alerta (fallo sensor)
+
+unsigned long ultimoMensaje = 0;
+const unsigned long timeout = 5000; // 5 segundos sin mensaje -> alerta
+
+void setup() {
+  pinMode(ledRx, OUTPUT);
+  pinMode(ledAlerta, OUTPUT);
+  
+  Serial.begin(9600);     // Comunicación con la interfaz Python
+  satSerial.begin(9600);  // Comunicación con el satélite
+
+  Serial.println("Estación de Tierra lista");
+  ultimoMensaje = millis();
+}
+
+void loop() {
+  // 1️⃣ Recepción de datos del satélite
+  if (satSerial.available()) {
+    String data = satSerial.readStringUntil('\n');
+    data.trim();
+
+    // Actualiza tiempo del último mensaje
+    ultimoMensaje = millis();
+
+    // 🔹 LED parpadeo recepción
+    digitalWrite(ledRx, HIGH);
+    delay(50);
+    digitalWrite(ledRx, LOW);
+
+    // 🔸 Analizar mensajes de fallo/alerta
+    // Fallo DHT
+    if (data.startsWith("3:")) {
+      digitalWrite(ledAlerta, HIGH);
+      Serial.println("⚠️ Fallo sensor DHT");
+    }
+    // Fallo distancia
+    else if (data.startsWith("6:")) {
+      digitalWrite(ledAlerta, HIGH);
+      Serial.println("⚠️ Fallo sensor ultrasonido");
+    }
+    // Mensaje normal de DHT o ultrasonido
+    else {
+      digitalWrite(ledAlerta, LOW);
+      Serial.println(data); // reenvía todos los datos al Python
+    }
+  }
+
+  // 2️⃣ Timeout: si no llega nada desde el satélite
+  if (millis() - ultimoMensaje > timeout) {
+    digitalWrite(ledAlerta, HIGH);
+    Serial.println("⚠️ Sin comunicación con el satélite");
+  }
+
+  // 3️⃣ Reenvío de comandos desde interfaz hacia el satélite
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.length() > 0) {
+      satSerial.println(cmd);
+    }
+  }
+}
