@@ -35,6 +35,20 @@ humedades = []
 eje_x = []
 media_movil = []
 
+def recalcular_media():
+    global media_movil
+    N = max(1, int(ventanaVar.get()))
+    nueva_media = []
+    for i in range(len(temperaturas)):
+        if i+1 >= N:
+            ventana = temperaturas[i+1-N:i+1]
+        else:
+            ventana = temperaturas[:i+1]
+        nueva_media.append(sum(ventana)/len(ventana))
+    media_movil = nueva_media
+    actualizar_graficas(force=True)
+
+
 alerta_activa = False
 alerta_media_activa = False
 limite_temp = 30.0
@@ -125,6 +139,8 @@ Entry(controls_frame, textvariable=limiteVar, width=10).grid(row=2,column=0, sti
 Label(controls_frame, text="Ventana media móvil (N):").grid(row=3,column=0, sticky=W)
 ventanaVar = IntVar(value=ventana_default)
 Spinbox(controls_frame, from_=1, to=200, textvariable=ventanaVar, width=6).grid(row=4,column=0, sticky=W)
+ventanaVar.trace_add("write", lambda *args: recalcular_media())
+
 
 Label(controls_frame, text="Intervalo envío DHT (s):").grid(row=5,column=0, sticky=W, pady=(6,0))
 intervaloDHTVar = IntVar(value=3)
@@ -170,10 +186,10 @@ def enviar_angulo():
             registrar_evento("COMANDOS", f"Enviar ángulo servo: {ang}°")
         else: messagebox.showerror("Error", "Ángulo debe estar entre 0 y 180")
     except: messagebox.showerror("Error", "Ángulo inválido")
-Button(controls_frame, text="Enviar ángulo", command=enviar_angulo, width=18, bg='cyan', fg='black').grid(row=16,column=0,pady=(4,6))
+Button(controls_frame, text="Enviar ángulo", command=enviar_angulo, width=18, bg="#03346D", fg='white').grid(row=16,column=0,pady=(4,6))
 
-Button(controls_frame, text="Activar Barrido", command=lambda: mySerial.write(b"6:1\n"), width=18, bg='green', fg='white').grid(row=17,column=0,pady=3)
-Button(controls_frame, text="Detener Barrido", command=lambda: mySerial.write(b"6:0\n"), width=18, bg='red', fg='white').grid(row=18,column=0,pady=3)
+Button(controls_frame, text="Activar Barrido", command=lambda: mySerial.write(b"6:1\n"), width=18, bg="#19BB0A", fg='white').grid(row=17,column=0,pady=3)
+Button(controls_frame, text="Detener Barrido", command=lambda: mySerial.write(b"6:0\n"), width=18, bg="#E50606", fg='white').grid(row=18,column=0,pady=3)
 
 Label(controls_frame, text="Estado alarma (medias):").grid(row=23, column=0, sticky=W, pady=(8,0))
 alarma_media_label = Label(controls_frame, text="NORMAL", bg="lightgreen",fg='black', width=18)
@@ -336,8 +352,7 @@ def abrir_radar():
     canvas_r.draw()
     canvas_r.get_tk_widget().pack(fill=BOTH, expand=True)
 
- def actualizar_radar_local():
-    if last_angle_received is not None:
+    def actualizar_radar_local():
         ax_r.clear()
         ax_r.set_facecolor("black")
         ax_r.set_theta_zero_location('N')
@@ -347,15 +362,18 @@ def abrir_radar():
         ax_r.set_thetamax(180)
         ax_r.set_title("Radar ultrasónico", color='green')
 
-        t = [math.radians(a) for a in radar_angulos]
-        r = radar_distancias
-        if len(t) > 1:
-            ax_r.plot(t, r, color='lime', linewidth=1.2)
-        ax_r.scatter([t[-1]], [r[-1]], c='lime', s=100, edgecolors='k')
+        if radar_angulos:
+            t = [math.radians(a) for a in radar_angulos]
+            r = radar_distancias
+            if len(t) > 1:
+                ax_r.plot(t, r, color='lime', linewidth=1.2)
+            ax_r.scatter([t[-1]], [r[-1]], c='lime', s=100, edgecolors='k')
 
         canvas_r.draw()
+        ventana_radar.after(1000, actualizar_radar_local)
 
-Button(controls_frame, text="Abrir Radar", command=abrir_radar, width=18, bg="#036D03").grid(row=31,column=0,pady=(4,6))
+    actualizar_radar_local()
+Button(controls_frame, text="Abrir Radar", command=abrir_radar, width=18, bg="#2CDF2C",fg='white').grid(row=31,column=0,pady=(4,6))
 
 
 # =================== Funciones graficado ===================
@@ -520,10 +538,10 @@ def ResetClick():
     except: pass
     actualizar_graficas(force=True)
 
-Button(controls_frame, text="Iniciar", bg='green', fg='white', command=IniciarClick, width=18).grid(row=19,column=0,pady=(8,2))
-Button(controls_frame, text="Parar", bg='red', fg='white', command=PararClick, width=18).grid(row=20,column=0,pady=2)
+Button(controls_frame, text="Iniciar", bg="#19BB0A", fg='white', command=IniciarClick, width=18).grid(row=19,column=0,pady=(8,2))
+Button(controls_frame, text="Parar", bg="#E50606", fg='white', command=PararClick, width=18).grid(row=20,column=0,pady=2)
 Button(controls_frame, text="Reanudar", bg="#EA7A12", fg='white', command=ReanudarClick, width=18).grid(row=21,column=0,pady=2)
-Button(controls_frame, text="Reset (reactiva barrido)", bg="#B706B4", fg='white', command=ResetClick, width=18).grid(row=22,column=0,pady=(6,2))
+Button(controls_frame, text="Reset (reactiva barrido)", bg="#EFE410", fg='white', command=ResetClick, width=18).grid(row=22,column=0,pady=(6,2))
 
 # =================== Cierre ===================
 def on_close():
