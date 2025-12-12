@@ -455,9 +455,12 @@ def leer_serial():
                     if len(temperaturas)>=3 and all(x>float(limiteVar.get()) for x in temperaturas[-3:]) and not alerta_activa:
                         alerta_activa=True; messagebox.showwarning("Alerta", f"Últimas 3 temperaturas superan {limiteVar.get()} °C")
                         registrar_evento("ERRORES", f"Alerta temperatura: últimas 3 superan {limiteVar.get()} °C")
+                        try: mySerial.write(b'Ventilador1\n')
+                        except: pass
                     elif alerta_activa and len(temperaturas)>=3 and not all(x>float(limiteVar.get()) for x in temperaturas[-3:]):
                         alerta_activa=False
-
+                        try: mySerial.write(b'Ventilador0\n')
+                        except: pass
                     medias_validas = [m for m in media_movil if not (isinstance(m,float) and math.isnan(m))]
                     if len(medias_validas)>=3 and all(m>float(limiteVar.get()) for m in medias_validas[-3:]):
                         alerta_media_activa=True; alarma_media_label.config(text="Peligro", bg="red")
