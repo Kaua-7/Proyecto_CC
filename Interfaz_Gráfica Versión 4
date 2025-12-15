@@ -1,20 +1,26 @@
-import serial
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.collections
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d import Axes3D  # noqa
+
 from tkinter import *
-from tkinter import messagebox
+from tkinter import messagebox, Toplevel, BOTH
+from tkinter import OptionMenu
+from PIL import Image, ImageTk
 import math
+import random
+import numpy as np
+import serial
 import time
 import re
 import datetime
-from matplotlib.figure import Figure
-from mpl_toolkits.mplot3d import Axes3D
 import os
-import numpy as np
-from tkinter import Toplevel, BOTH
 
-# =================== Configuración puerto ===================
-device = 'COM5'  
+# =================== Configuración puerto serie ===================
+device = 'COM5'  # Cambia al puerto correcto
 mySerial = serial.Serial(device, 9600, timeout=1)
 
 # =================== Variables de datos ===================
@@ -22,19 +28,6 @@ temperaturas = []
 humedades = []
 eje_x = []
 media_movil = []
-
-def recalcular_media():
-    global media_movil
-    N = max(1, int(ventanaVar.get()))
-    nueva_media = []
-    for i in range(len(temperaturas)):
-        if i+1 >= N:
-            ventana = temperaturas[i+1-N:i+1]
-        else:
-            ventana = temperaturas[:i+1]
-        nueva_media.append(sum(ventana)/len(ventana))
-    media_movil = nueva_media
-    actualizar_graficas(force=True)
 
 alerta_activa = False
 alerta_media_activa = False
@@ -45,10 +38,9 @@ lectura_activa = False
 
 radar_angulos = []
 radar_distancias = []
-RADAR_MAX_POINTS = 50
+RADAR_MAX_POINTS = 10
 last_angle_received = None
 modo_media = "python"
-
 last_dht_accepted_ms = 0
 
 # =================== Variables órbita ===================
@@ -74,45 +66,359 @@ def registrar_evento(tipo, descripcion):
         print("Error escribiendo log:", e)
     print("EVENTO:", linea.strip())
 
-# =================== Ventana principal ===================
+def recalcular_media():
+    global media_movil
+    N = max(1, int(ventanaVar.get()))
+    nueva_media = []
+    for j in range(len(temperaturas)):
+        if j+1 >= N:
+            ventana = temperaturas[j+1-N:j+1]
+        else:
+            ventana = temperaturas[:j+1]
+        nueva_media.append(sum(ventana)/len(ventana))
+    media_movil = nueva_media
+    actualizar_graficas(force=True)
+
+# =================== Ventana principal / tema oscuro ===================
 window = Tk()
 window.title("Ground Station - Radar + Gráficas + Órbita")
-window.geometry("1600x900")
+window.state("zoomed")
 
-# =================== Figuras principales (izquierda) ===================
-fig = plt.figure(figsize=(12, 9))
-ax1 = fig.add_subplot(3, 1, 1)
-ax2 = fig.add_subplot(3, 1, 2)
-ax3 = fig.add_subplot(3, 1, 3)
+DARK_BG = "#202124"
+CARD_BG = "#111111"
+TEXT_FG = "#f5f5f5"
 
-line_temp, = ax1.plot([], [], linestyle='-', marker=None, color='red', label="Temperatura")
-ax1.set_title("Temperatura (°C)"); ax1.grid(True); ax1.legend()
-line_hum, = ax2.plot([], [], linestyle='-', marker=None, color='blue', label="Humedad")
-ax2.set_title("Humedad (%)"); ax2.grid(True); ax2.legend()
-line_avg, = ax3.plot([], [], linestyle='-', marker=None, color='green', label="Media móvil")
-ax3.set_title("Media móvil"); ax3.grid(True); ax3.legend()
+window.configure(bg=DARK_BG)
 
-canvas = FigureCanvasTkAgg(fig, master=window)
+window.grid_rowconfigure(0, weight=1)
+window.grid_rowconfigure(1, weight=1)
+window.grid_columnconfigure(0, weight=1)
+window.grid_columnconfigure(1, weight=1)
+
+frame_graficas = Frame(window, bg=CARD_BG, bd=2, relief="ridge")
+frame_radar    = Frame(window, bg=CARD_BG, bd=2, relief="ridge")
+frame_orbita   = Frame(window, bg=CARD_BG, bd=2, relief="ridge")
+frame_controles = Frame(window, bg="black", bd=2, relief="ridge")
+
+frame_graficas.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+frame_radar.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+frame_orbita.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
+frame_controles.grid(row=1, column=1, sticky="nsew", padx=8, pady=8)
+
+for f in (frame_graficas, frame_radar, frame_orbita, frame_controles):
+    f.grid_rowconfigure(0, weight=0)
+    f.grid_rowconfigure(1, weight=1)
+    f.grid_columnconfigure(0, weight=1)
+
+# =================== Pantalla completa ===================
+fullscreen_state = {"active": False, "target": None, "saved": {}}
+
+def enter_fullscreen(target_frame):
+    if fullscreen_state["active"]:
+        return
+    fullscreen_state["active"] = True
+    fullscreen_state["target"] = target_frame
+    for f in (frame_graficas, frame_radar, frame_orbita, frame_controles):
+        fullscreen_state["saved"][f] = f.grid_info()
+        f.grid_forget()
+    target_frame.grid(row=0, column=0, rowspan=2, columnspan=2,
+                      sticky="nsew", padx=0, pady=0)
+
+def exit_fullscreen():
+    if not fullscreen_state["active"]:
+        return
+    for f, info in fullscreen_state["saved"].items():
+        f.grid(row=info["row"], column=info["column"],
+               rowspan=info.get("rowspan", 1),
+               columnspan=info.get("columnspan", 1),
+               sticky=info.get("sticky", "nsew"),
+               padx=8, pady=8)
+    fullscreen_state["active"] = False
+    fullscreen_state["target"] = None
+    fullscreen_state["saved"] = {}
+
+def add_fullscreen_header(frame, title_text):
+    header = Frame(frame, bg=CARD_BG, bd=0, highlightthickness=0)
+    header.grid(row=0, column=0, sticky="ew")
+    header.grid_columnconfigure(0, weight=1)
+    lbl = Label(header, text=title_text, bg=CARD_BG, fg=TEXT_FG,
+                font=("Segoe UI", 11, "bold"))
+    lbl.grid(row=0, column=0, sticky="w", padx=6, pady=4)
+    btn_fs = Button(header, text="⤢", bg="#333333", fg=TEXT_FG, bd=0,
+                    command=lambda f=frame: enter_fullscreen(f))
+    btn_fs.grid(row=0, column=1, sticky="e", padx=4)
+    btn_exit = Button(header, text="⤡", bg="#333333", fg=TEXT_FG, bd=0,
+                      command=exit_fullscreen)
+    btn_exit.grid(row=0, column=2, sticky="e", padx=4)
+
+# =================== 1) Gráficas ===================
+add_fullscreen_header(frame_graficas, "Gráficas de temperatura / humedad")
+
+content_graf = Frame(frame_graficas, bg=CARD_BG)
+content_graf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+content_graf.grid_rowconfigure(0, weight=1)
+content_graf.grid_columnconfigure(0, weight=1)
+
+fig = Figure(figsize=(5, 4), dpi=100)
+gs = fig.add_gridspec(3, 1, height_ratios=[2.5, 1, 1])
+ax1 = fig.add_subplot(gs[0, 0])
+ax2 = fig.add_subplot(gs[1, 0])
+ax3 = fig.add_subplot(gs[2, 0])
+
+fig.patch.set_facecolor(CARD_BG)
+for ax in (ax1, ax2, ax3):
+    ax.set_facecolor("#222222")
+    ax.tick_params(colors=TEXT_FG)
+    ax.title.set_color(TEXT_FG)
+    for spine in ax.spines.values():
+        spine.set_color(TEXT_FG)
+    ax.grid(color="#444444", alpha=0.6)
+
+line_temp, = ax1.plot([], [], linestyle='-', color='#ff6b6b', label="Temperatura")
+ax1.set_title("Temperatura (°C)")
+ax1.legend(facecolor="#222222", edgecolor="#444444")
+line_hum, = ax2.plot([], [], linestyle='-', color='#4dabf7', label="Humedad")
+ax2.set_title("Humedad (%)")
+ax2.legend(facecolor="#222222", edgecolor="#444444")
+line_avg, = ax3.plot([], [], linestyle='-', color='#51cf66', label="Media móvil")
+ax3.set_title("Media móvil")
+ax3.legend(facecolor="#222222", edgecolor="#444444")
+
+canvas = FigureCanvasTkAgg(fig, master=content_graf)
 canvas.draw()
-canvas.get_tk_widget().grid(row=0, column=0, rowspan=20, padx=10, pady=10)
+canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
-# =================== Panel de controles (arriba derecha) ===================
-controls_frame = Frame(window)
-controls_frame.grid(row=0, column=1, sticky=N, padx=12)
+# =================== 2) Radar ===================
+add_fullscreen_header(frame_radar, "Radar ultrasónico")
 
-Label(controls_frame, text="Ground Station v2.5", font=("Courier", 18, "italic")).grid(row=0, column=0, pady=(0,10))
-Label(controls_frame, text="Límite temperatura (°C):").grid(row=1, column=0, sticky=W)
+radar_inner = Frame(frame_radar, bg=CARD_BG)
+radar_inner.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+radar_inner.grid_rowconfigure(0, weight=1)
+radar_inner.grid_columnconfigure(0, weight=1)
+
+def abrir_radar():
+    for w in radar_inner.winfo_children():
+        w.destroy()
+
+    fig_radar = Figure(figsize=(4, 4), dpi=100)
+    ax_r = fig_radar.add_subplot(111, polar=True)
+
+    fig_radar.patch.set_facecolor(CARD_BG)
+    ax_r.set_facecolor("black")
+
+    ax_r.set_theta_zero_location('N')
+    ax_r.set_theta_direction(-1)
+    ax_r.set_thetamin(0)
+    ax_r.set_thetamax(360)
+    ax_r.set_rlim(0, 400)
+    ax_r.set_rticks(range(0, 401, 50))
+    ax_r.set_yticklabels([str(r) for r in range(0, 401, 50)],
+                         color="#00ff80", fontsize=8)
+
+    ang_ticks = np.deg2rad(np.arange(0, 360, 30))
+    ax_r.set_xticks(ang_ticks)
+    ax_r.set_xticklabels([f"{deg}°" for deg in range(0, 360, 30)],
+                         color="#00ff80", fontsize=8)
+
+    ax_r.grid(color="#008000", alpha=0.4)
+    ax_r.spines['polar'].set_color("#00ff80")
+    ax_r.tick_params(colors="#00ff80")
+
+    ax_r.set_title("Radar ultrasónico", color='lime')
+
+    info_text = ax_r.text(0.5, 1.05, "", transform=ax_r.transAxes,
+                          ha="center", va="bottom", color="white", fontsize=10)
+
+    canvas_r = FigureCanvasTkAgg(fig_radar, master=radar_inner)
+    canvas_r.draw()
+    canvas_r.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+    beam_line, = ax_r.plot([], [], color="#00ff80", linewidth=2)
+
+    trail_length = 20
+    trail_lines = []
+    for i_local in range(trail_length):
+        alpha = max(0, 0.6 - i_local * 0.03)
+        line, = ax_r.plot([], [], color="#00ff80", linewidth=1, alpha=alpha)
+        trail_lines.append(line)
+
+    echo_scatter = ax_r.scatter([], [], s=40, c="#00ff00", alpha=0.9, edgecolors='none')
+
+    frame_counter = {"n": 0}
+
+    def actualizar_radar_local():
+        frame_counter["n"] += 1
+        frame = frame_counter["n"]
+
+        angle = (frame % 360) * math.pi / 180.0
+
+        r = np.linspace(0, 400, 200)
+        theta = np.full_like(r, angle)
+        beam_line.set_data(theta, r)
+
+        prev_theta, prev_r = beam_line.get_data()
+        last_theta, last_r = prev_theta, prev_r
+        for line in trail_lines:
+            lt, lr = line.get_data()
+            line.set_data(last_theta, last_r)
+            last_theta, last_r = lt, lr
+
+        if radar_angulos:
+            t = [math.radians(a) for a in radar_angulos]
+            d = radar_distancias
+            offsets = np.column_stack([t, d])
+            echo_scatter.set_offsets(offsets)
+
+            ang_last = radar_angulos[-1]
+            dist_last = radar_distancias[-1]
+            info_text.set_text(f"Ángulo: {ang_last:.1f}° Distancia: {dist_last:.1f} cm")
+        else:
+            echo_scatter.set_offsets(np.empty((0, 2)))
+            info_text.set_text("Sin ecos")
+
+        canvas_r.draw()
+        window.after(40, actualizar_radar_local)
+
+    actualizar_radar_local()
+
+abrir_radar()
+
+# =================== 3) Órbita ===================
+add_fullscreen_header(frame_orbita, "Órbita satélite")
+
+orbita_inner = Frame(frame_orbita, bg=CARD_BG)
+orbita_inner.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+orbita_inner.grid_rowconfigure(0, weight=1)
+orbita_inner.grid_columnconfigure(0, weight=1)
+
+def abrir_sistema_orbital():
+    for w in orbita_inner.winfo_children():
+        w.destroy()
+
+    fig_local = Figure(figsize=(4, 4), dpi=100)
+    ax_local = fig_local.add_subplot(111, projection='3d')
+
+    fig_local.patch.set_facecolor(CARD_BG)
+    ax_local.set_facecolor("#000000")
+    ax_local.set_title("Órbita Satélite 3D", color=TEXT_FG)
+    ax_local.set_xlabel("X (m)", color=TEXT_FG)
+    ax_local.set_ylabel("Y (m)", color=TEXT_FG)
+    ax_local.set_zlabel("Z (m)", color=TEXT_FG)
+    ax_local.tick_params(colors=TEXT_FG)
+
+    R_EARTH_3D = R_EARTH
+    u = np.linspace(0, 2 * np.pi, 40)
+    v = np.linspace(0, np.pi, 20)
+    x_sphere = R_EARTH_3D * np.outer(np.cos(u), np.sin(v))
+    y_sphere = R_EARTH_3D * np.outer(np.sin(u), np.sin(v))
+    z_sphere = R_EARTH_3D * np.outer(np.ones_like(u), np.cos(v))
+    ax_local.plot_surface(x_sphere, y_sphere, z_sphere, color='#1e90ff',
+                          edgecolor='none', alpha=0.9)
+
+    orbit_line, = ax_local.plot([], [], [], '-', linewidth=2, color='yellow', label='Órbita')
+    satellite_marker, = ax_local.plot([], [], [], 'o', markersize=6, color='red', label='Satélite')
+    ax_local.legend(facecolor="#111111", edgecolor="#444444", labelcolor=TEXT_FG)
+
+    margin_factor = 1.6
+    lim = R_EARTH_3D * margin_factor
+    ax_local.set_xlim(-lim, lim)
+    ax_local.set_ylim(-lim, lim)
+    ax_local.set_zlim(-lim, lim)
+    ax_local.set_box_aspect([1, 1, 1])
+
+    canvas_local = FigureCanvasTkAgg(fig_local, master=orbita_inner)
+    canvas_local.draw()
+    canvas_local.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+    def actualizar_local():
+        if x_orbit and y_orbit and z_orbit:
+            factor = 1.05
+            xo = [factor * v for v in x_orbit]
+            yo = [factor * v for v in y_orbit]
+            zo = [factor * v for v in z_orbit]
+
+            orbit_line.set_data(xo, yo)
+            orbit_line.set_3d_properties(zo)
+            satellite_marker.set_data(xo[-1:], yo[-1:])
+            satellite_marker.set_3d_properties(zo[-1:])
+
+            canvas_local.draw()
+        window.after(500, actualizar_local)
+
+    actualizar_local()
+
+abrir_sistema_orbital()
+
+# =================== 4) Controles ===================
+add_fullscreen_header(frame_controles, "Controles y parámetros")
+
+cont_inner = Frame(frame_controles, bg="black")
+cont_inner.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
+
+for r in range(20):
+    cont_inner.grid_rowconfigure(r, weight=0)
+cont_inner.grid_rowconfigure(19, weight=1)
+for c in range(3):
+    cont_inner.grid_columnconfigure(c, weight=1)
+
+BTN_BG = "#3b4252"
+BTN_FG = "#eceff4"
+LABEL_FONT = ("Segoe UI", 11)
+ENTRY_FONT = ("Segoe UI", 11)
+
+# Título
+Label(cont_inner, text="Ground Station v2.5",
+      bg="black", fg=TEXT_FG, font=("Segoe UI", 14, "bold")).grid(
+    row=0, column=0, columnspan=3, sticky="w", pady=(0,8)
+)
+
+# Límite temperatura
+Label(cont_inner, text="Límite temperatura (°C):",
+      bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=1, column=0, sticky="w", pady=2
+)
 limiteVar = StringVar(value=str(limite_temp))
-Entry(controls_frame, textvariable=limiteVar, width=10).grid(row=2,column=0, sticky=W)
+Entry(cont_inner, textvariable=limiteVar, width=8,
+      bg="#2b2b2b", fg=TEXT_FG, insertbackground=TEXT_FG,
+      relief="flat", font=ENTRY_FONT).grid(
+    row=1, column=1, sticky="w", padx=(4,4), pady=2
+)
 
-Label(controls_frame, text="Ventana media móvil (N):").grid(row=3,column=0, sticky=W)
+# Ventana media móvil
+Label(cont_inner, text="Ventana media móvil (N):",
+      bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=2, column=0, sticky="w", pady=2
+)
 ventanaVar = IntVar(value=ventana_default)
-Spinbox(controls_frame, from_=1, to=200, textvariable=ventanaVar, width=6).grid(row=4,column=0, sticky=W)
+Spinbox(cont_inner, from_=1, to=200, textvariable=ventanaVar, width=6,
+        bg="#2b2b2b", fg=TEXT_FG, buttonbackground="#444444",
+        relief="flat", font=ENTRY_FONT).grid(
+    row=2, column=1, sticky="w", padx=(4,4), pady=2
+)
 ventanaVar.trace_add("write", lambda *args: recalcular_media())
 
-Label(controls_frame, text="Intervalo envío DHT (s):").grid(row=5,column=0, sticky=W, pady=(6,0))
+# Intervalos
+Label(cont_inner, text="Intervalo envío DHT (s):",
+      bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=3, column=0, sticky="w", pady=2
+)
 intervaloDHTVar = IntVar(value=3)
-Spinbox(controls_frame, from_=1, to=3600, textvariable=intervaloDHTVar, width=6).grid(row=6,column=0, sticky=W)
+Spinbox(cont_inner, from_=1, to=3600, textvariable=intervaloDHTVar, width=6,
+        bg="#2b2b2b", fg=TEXT_FG, buttonbackground="#444444",
+        relief="flat", font=ENTRY_FONT).grid(
+    row=3, column=1, sticky="w", padx=(4,4), pady=2
+)
+
+Label(cont_inner, text="Intervalo ultrasonidos (ms):",
+      bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=4, column=0, sticky="w", pady=2
+)
+intervaloUltraVar = IntVar(value=300)
+Spinbox(cont_inner, from_=50, to=10000, textvariable=intervaloUltraVar, width=8,
+        bg="#2b2b2b", fg=TEXT_FG, buttonbackground="#444444",
+        relief="flat", font=ENTRY_FONT).grid(
+    row=4, column=1, sticky="w", padx=(4,4), pady=2
+)
 
 def send_intervalo_dht():
     try:
@@ -122,12 +428,6 @@ def send_intervalo_dht():
         messagebox.showerror("Error", "Intervalo DHT inválido")
     registrar_evento("COMANDOS", f"Enviar intervalo DHT: {intervaloDHTVar.get()}s")
 
-Button(controls_frame, text="Enviar intervalo DHT:",command=send_intervalo_dht, width=18).grid(row=7,column=0,pady=(4,8))
-
-Label(controls_frame, text="Intervalo ultrasonidos (ms):").grid(row=8,column=0, sticky=W)
-intervaloUltraVar = IntVar(value=300)
-Spinbox(controls_frame, from_=50, to=10000, textvariable=intervaloUltraVar, width=8).grid(row=9,column=0, sticky=W)
-
 def send_intervalo_ultra():
     try:
         ms = int(intervaloUltraVar.get())
@@ -136,27 +436,52 @@ def send_intervalo_ultra():
         messagebox.showerror("Error", "Intervalo ultrasonidos inválido")
     registrar_evento("COMANDOS", f"Enviar intervalo ultrasonidos: {intervaloUltraVar.get()}ms")
 
-Button(controls_frame, text="Enviar intervalo", command=send_intervalo_ultra, width=18).grid(row=10,column=0,pady=(4,8))
-
-Label(controls_frame, text="Dónde calcular la media:").grid(row=11,column=0, sticky=W)
+# Dónde calcular la media
+Label(cont_inner, text="Dónde calcular la media:",
+      bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=5, column=0, sticky="w", pady=(8,2)
+)
 modoVar = StringVar(value="python")
 
 def modo_media_changed():
     global modo_media
     modo_media = modoVar.get()
     if modo_media == "arduino":
-        mySerial.write(b"8:1\n"); time.sleep(0.05)
-        n = int(ventanaVar.get())
-        mySerial.write(f"9:{n}\n".encode())
+        try:
+            mySerial.write(b"8:1\n")
+            time.sleep(0.05)
+            n = int(ventanaVar.get())
+            mySerial.write(f"9:{n}\n".encode())
+        except:
+            pass
     else:
-        mySerial.write(b"8:0\n")
+        try:
+            mySerial.write(b"8:0\n")
+        except:
+            pass
 
-Radiobutton(controls_frame, text="Python (local)", variable=modoVar, value="python", command=modo_media_changed).grid(row=12,column=0, sticky=W)
-Radiobutton(controls_frame, text="Arduino (remoto)", variable=modoVar, value="arduino", command=modo_media_changed).grid(row=13,column=0, sticky=W)
+Radiobutton(cont_inner, text="Python (local)", variable=modoVar, value="python",
+            command=modo_media_changed, bg="black", fg=TEXT_FG,
+            selectcolor="#333333", font=LABEL_FONT).grid(
+    row=5, column=1, sticky="w", pady=(8,2)
+)
+Radiobutton(cont_inner, text="Arduino (remoto)", variable=modoVar, value="arduino",
+            command=modo_media_changed, bg="black", fg=TEXT_FG,
+            selectcolor="#333333", font=LABEL_FONT).grid(
+    row=5, column=2, sticky="w", pady=(8,2)
+)
 
-Label(controls_frame, text="Ángulo servo (0-180°):").grid(row=14,column=0, sticky=W, pady=(8,0))
+# Ángulo servo
+Label(cont_inner, text="Ángulo servo (0-180°):",
+      bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=6, column=0, sticky="w", pady=2
+)
 anguloVar = IntVar(value=0)
-Entry(controls_frame, textvariable=anguloVar, width=6).grid(row=15,column=0, sticky=W)
+Entry(cont_inner, textvariable=anguloVar, width=6,
+      bg="#2b2b2b", fg=TEXT_FG, insertbackground=TEXT_FG,
+      relief="flat", font=ENTRY_FONT).grid(
+    row=6, column=1, sticky="w", padx=(4,4), pady=2
+)
 
 def enviar_angulo():
     try:
@@ -169,24 +494,26 @@ def enviar_angulo():
     except:
         messagebox.showerror("Error", "Ángulo inválido")
 
-Button(controls_frame, text="Enviar ángulo", command=enviar_angulo, width=18, bg="#03346D", fg='white').grid(row=16,column=0,pady=(4,6))
+# Estado alarma
+Label(cont_inner, text="Estado alarma (medias):",
+      bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=7, column=0, sticky="w", pady=(8,2)
+)
+alarma_media_label = Label(cont_inner, text="NORMAL", bg="lightgreen",
+                           fg='black', width=18, font=("Segoe UI", 11, "bold"))
+alarma_media_label.grid(row=7, column=1, sticky="w", padx=(4,4), pady=(8,2))
 
-Button(controls_frame, text="Activar Barrido", command=lambda: mySerial.write(b"6:1\n"), width=18, bg="#19BB0A", fg='white').grid(row=17,column=0,pady=3)
-Button(controls_frame, text="Detener Barrido", command=lambda: mySerial.write(b"6:0\n"), width=18, bg="#E50606", fg='white').grid(row=18,column=0,pady=3)
-
-Button(controls_frame, text="Iniciar", bg="#19BB0A", fg='white', command=lambda: IniciarClick(), width=18).grid(row=19,column=0,pady=(8,2))
-Button(controls_frame, text="Parar", bg="#E50606", fg='white', command=lambda: PararClick(), width=18).grid(row=20,column=0,pady=2)
-Button(controls_frame, text="Reanudar", bg="#EA7A12", fg='white', command=lambda: ReanudarClick(), width=18).grid(row=21,column=0,pady=2)
-Button(controls_frame, text="Reset (reactiva barrido)", bg="#EFE410", fg='white', command=lambda: ResetClick(), width=18).grid(row=22,column=0,pady=(6,2))
-
-Label(controls_frame, text="Estado alarma (medias):").grid(row=23, column=0, sticky=W, pady=(8,0))
-alarma_media_label = Label(controls_frame, text="NORMAL", bg="lightgreen",fg='black', width=18)
-alarma_media_label.grid(row=24, column=0, pady=(2,8))
-
-# =================== Observaciones manuales ===================
-Label(controls_frame, text="Registrar Observación:").grid(row=26, column=0, sticky=W, pady=(8,0))
+# Observaciones manuales
+Label(cont_inner, text="Registrar observación:",
+      bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=8, column=0, sticky="w", pady=(8,2)
+)
 observacionVar = StringVar()
-Entry(controls_frame, textvariable=observacionVar, width=25).grid(row=27, column=0, sticky=W)
+Entry(cont_inner, textvariable=observacionVar,
+      bg="#2b2b2b", fg=TEXT_FG, insertbackground=TEXT_FG,
+      relief="flat", font=ENTRY_FONT).grid(
+    row=8, column=1, columnspan=2, sticky="ew", padx=(4,4), pady=(8,2)
+)
 
 def registrar_observacion():
     obs = observacionVar.get().strip()
@@ -197,9 +524,7 @@ def registrar_observacion():
     else:
         messagebox.showwarning("Campo vacío", "Ingrese una observación antes de registrar.")
 
-Button(controls_frame, text="Registrar Observación", command=registrar_observacion, width=18, bg="#03346D", fg='white').grid(row=28, column=0, pady=(4,6))
-
-# =================== Visor de eventos ===================
+# ========= Visor de eventos =========
 def abrir_visor_eventos():
     try:
         with open(LOG_FILE, "r", encoding="utf-8") as f:
@@ -251,226 +576,64 @@ def abrir_visor_eventos():
                 mostrar = False
             if mostrar:
                 text_area.insert(END, linea)
-        text_area.see(END)
+                text_area.see(END)
 
     Button(filtro_frame, text="Actualizar", command=actualizar_texto).pack(side=RIGHT)
     actualizar_texto()
 
-Button(controls_frame, text="Abrir Visor de Eventos", command=abrir_visor_eventos, width=18, bg="#C4243F",fg='white').grid(row=29, column=0, pady=(4,6))
+# ========= Botones agrupados =========
+BTN_FONT = ("Segoe UI", 11, "bold")
+BTN_WIDTH = 18
+BTN_PADY = 8
 
-# =================== Frames para radar y órbita incrustados ===================
-right_bottom_frame = Frame(window)
-right_bottom_frame.grid(row=1, column=1, sticky=N, padx=12, pady=(5,10))
+row_btn = 10
 
-radar_frame = Frame(right_bottom_frame)
-radar_frame.grid(row=0, column=0, padx=5, pady=5)
+Button(cont_inner, text="Iniciar", bg="#19BB0A", fg='white',
+       command=lambda: IniciarClick(), width=BTN_WIDTH, font=BTN_FONT).grid(
+    row=row_btn, column=0, columnspan=3, pady=BTN_PADY
+)
+row_btn += 1
+Button(cont_inner, text="Parar", bg="#E50606", fg='white',
+       command=lambda: PararClick(), width=BTN_WIDTH, font=BTN_FONT).grid(
+    row=row_btn, column=0, columnspan=3, pady=BTN_PADY
+)
+row_btn += 1
+Button(cont_inner, text="Reanudar", bg="#EA7A12", fg='white',
+       command=lambda: ReanudarClick(), width=BTN_WIDTH, font=BTN_FONT).grid(
+    row=row_btn, column=0, columnspan=3, pady=BTN_PADY
+)
+row_btn += 1
+Button(cont_inner, text="Reset (reactiva barrido)", bg="#EFE410", fg='black',
+       command=lambda: ResetClick(), width=BTN_WIDTH, font=BTN_FONT).grid(
+    row=row_btn, column=0, columnspan=3, pady=BTN_PADY
+)
+row_btn += 1
+Button(cont_inner, text="Enviar intervalos",
+       command=lambda:(send_intervalo_dht(), send_intervalo_ultra()),
+       bg=BTN_BG, fg=BTN_FG, relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH).grid(
+    row=row_btn, column=0, columnspan=3, pady=BTN_PADY
+)
+row_btn += 1
+Button(cont_inner, text="Enviar ángulo servo", command=enviar_angulo,
+       bg=BTN_BG, fg=BTN_FG, relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH).grid(
+    row=row_btn, column=0, columnspan=3, pady=BTN_PADY
+)
+row_btn += 1
+Button(cont_inner, text="Registrar observación", command=registrar_observacion,
+       bg=BTN_BG, fg=BTN_FG, relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH).grid(
+    row=row_btn, column=0, columnspan=3, pady=BTN_PADY
+)
+row_btn += 1
+Button(cont_inner, text="Abrir Visor de Eventos", command=abrir_visor_eventos,
+       bg="#C4243F", fg='white', relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH).grid(
+    row=row_btn, column=0, columnspan=3, pady=BTN_PADY
+)
 
-orbit_frame = Frame(right_bottom_frame)
-orbit_frame.grid(row=0, column=1, padx=5, pady=5)
-
-# =================== Órbita incrustada ===================
-def abrir_sistema_orbital():
-    for widget in orbit_frame.winfo_children():
-        widget.destroy()
-
-    fig_local = Figure(figsize=(4,4), dpi=100)
-    ax_local = fig_local.add_subplot(111, projection='3d')
-    ax_local.set_title("Órbita Satélite 3D")
-    ax_local.set_xlabel("X (m)")
-    ax_local.set_ylabel("Y (m)")
-    ax_local.set_zlabel("Z (m)")
-    ax_local.grid(True)
-
-    from PIL import Image
-    texture_path = r"C:\Users\kauav\Desktop\Versión 4\world.200412.3x5400x2700.jpg"
-
-    img_texture = None
-    try:
-        earth_img = Image.open(texture_path)
-        earth_img = earth_img.resize((1024, 512))
-        img_texture = np.array(earth_img) / 255.0
-        if img_texture.shape[2] == 4:
-            img_texture = img_texture[:, :, :3]
-    except FileNotFoundError:
-        print("No se encontró la textura de la Tierra, se usará una esfera azul.")
-        img_texture = None
-
-    R_EARTH_3D = 3.5e6
-    n_lat, n_lon = 40, 80
-
-    lon = np.linspace(-np.pi, np.pi, n_lon)
-    lat = np.linspace(-np.pi/2, np.pi/2, n_lat)
-    lon, lat = np.meshgrid(lon, lat)
-
-    x_sphere = R_EARTH_3D * np.cos(lat) * np.cos(lon)
-    y_sphere = R_EARTH_3D * np.cos(lat) * np.sin(lon)
-    z_sphere = R_EARTH_3D * np.sin(lat)
-
-    if img_texture is not None:
-        from PIL import Image as PILImage
-        tex_resized = PILImage.fromarray((img_texture*255).astype(np.uint8)).resize((n_lon, n_lat))
-        tex_resized = np.array(tex_resized) / 255.0
-        tex_resized = np.flipud(tex_resized)
-        ax_local.plot_surface(
-            x_sphere, y_sphere, z_sphere,
-            rstride=1, cstride=1,
-            facecolors=tex_resized,
-            linewidth=0, antialiased=False, shade=False,
-            zorder=1
-        )
-    else:
-        ax_local.plot_surface(
-            x_sphere, y_sphere, z_sphere,
-            color='lightblue', linewidth=0, antialiased=True, shade=True,
-            zorder=1
-        )
-
-    orbit_line, = ax_local.plot([], [], [], '-', linewidth=2, color='yellow', label='Órbita', zorder=10)
-    satellite_marker, = ax_local.plot([], [], [], 'o', markersize=6, color='red', label='Satélite', zorder=11)
-    ax_local.legend()
-
-    margin_factor = 1.5
-    lim = R_EARTH_3D * margin_factor
-    ax_local.set_xlim(-lim, lim)
-    ax_local.set_ylim(-lim, lim)
-    ax_local.set_zlim(-lim, lim)
-    ax_local.set_box_aspect([1, 1, 1])
-
-    canvas_local = FigureCanvasTkAgg(fig_local, master=orbit_frame)
-    canvas_local.draw()
-    canvas_local.get_tk_widget().pack(fill=BOTH, expand=True)
-
-    def actualizar_local():
-        if x_orbit and y_orbit and z_orbit:
-            factor = 1.05
-            xo = [factor * v for v in x_orbit]
-            yo = [factor * v for v in y_orbit]
-            zo = [factor * v for v in z_orbit]
-
-            orbit_line.set_data(xo, yo)
-            orbit_line.set_3d_properties(zo)
-            satellite_marker.set_data(xo[-1:], yo[-1:])
-            satellite_marker.set_3d_properties(zo[-1:])
-
-        canvas_local.draw()
-        window.after(500, actualizar_local)
-
-    actualizar_local()
-
-Button(controls_frame, text="Mostrar Sistema Orbital 3D", command=abrir_sistema_orbital, width=18, bg='#00aaff', fg='black').grid(row=30, column=0, pady=(4,6))
-
-# =================== Radar incrustado con ecos que se difuminan ===================
-def abrir_radar():
-    for widget in radar_frame.winfo_children():
-        widget.destroy()
-
-    fig_radar = Figure(figsize=(4,4), dpi=100)
-    ax_r = fig_radar.add_subplot(111, polar=True)
-
-    fig_radar.patch.set_facecolor("black")
-    ax_r.set_facecolor("black")
-
-    ax_r.set_theta_zero_location('N')
-    ax_r.set_theta_direction(-1)
-
-    ax_r.set_thetamin(0)
-    ax_r.set_thetamax(360)
-
-    ax_r.set_rlim(0, 400)
-    ax_r.set_rticks(range(0, 401, 50))
-    ax_r.set_yticklabels([str(r) for r in range(0, 401, 50)], color="#00ff80", fontsize=8)
-
-    ang_ticks = np.deg2rad(np.arange(0, 360, 30))
-    ax_r.set_xticks(ang_ticks)
-    ax_r.set_xticklabels([f"{deg}°" for deg in range(0, 360, 30)], color="#00ff80", fontsize=8)
-
-    ax_r.grid(color="#008000", alpha=0.4)
-    ax_r.spines['polar'].set_color("#00ff80")
-    ax_r.tick_params(colors="#00ff80")
-
-    ax_r.set_title("Radar ultrasónico", color='lime')
-
-    info_text = ax_r.text(0.5, 1.05, "", transform=ax_r.transAxes,
-                          ha="center", va="bottom", color="white", fontsize=10)
-
-    canvas_r = FigureCanvasTkAgg(fig_radar, master=radar_frame)
-    canvas_r.draw()
-    canvas_r.get_tk_widget().pack(fill=BOTH, expand=True)
-
-    # Barrido
-    beam_line, = ax_r.plot([], [], color="#00ff80", linewidth=2)
-
-    trail_length = 20
-    trail_lines = []
-    for i_local in range(trail_length):
-        alpha = max(0, 0.6 - i_local * 0.03)
-        line, = ax_r.plot([], [], color="#00ff80", linewidth=1, alpha=alpha)
-        trail_lines.append(line)
-
-    # Ecos que se difuminan: guardamos una lista de ecos con alpha
-    # cada eco: (theta, r, alpha)
-    ecos = []
-
-    frame_counter = {"n": 0}
-
-    def actualizar_radar_local():
-        frame_counter["n"] += 1
-        frame = frame_counter["n"]
-
-        # Ángulo de barrido (simulado si no hay datos)
-        angle = (frame % 360) * math.pi / 180.0
-
-        r = np.linspace(0, 400, 200)
-        theta = np.full_like(r, angle)
-        beam_line.set_data(theta, r)
-
-        # Desplazar la "estela" del haz
-        prev_theta, prev_r = beam_line.get_data()
-        last_theta, last_r = prev_theta, prev_r
-        for line in trail_lines:
-            lt, lr = line.get_data()
-            line.set_data(last_theta, last_r)
-            last_theta, last_r = lt, lr
-
-        # Actualizar ecos con desvanecimiento
-        # Añadir nuevo eco si hay datos del radar
-        if radar_angulos:
-            # último eco real
-            ang_last = radar_angulos[-1]
-            dist_last = radar_distancias[-1]
-            ecos.append([math.radians(ang_last), dist_last, 1.0])  # alpha inicial 1.0
-
-            info_text.set_text(f"Ángulo: {ang_last:.1f}°   Distancia: {dist_last:.1f} cm")
-        else:
-            info_text.set_text("Sin ecos")
-
-        # Reducir alpha de todos los ecos existentes
-        for e in ecos:
-            e[2] *= 0.92  # factor de desvanecimiento
-
-        # Eliminar ecos casi invisibles
-        ecos[:] = [e for e in ecos if e[2] > 0.05]
-
-        if ecos:
-            thetas = [e[0] for e in ecos]
-            dists  = [e[1] for e in ecos]
-            alphas = [e[2] for e in ecos]
-
-            # Crear colores RGBA con alpha diferente para cada eco
-            colors = [(0.0, 1.0, 0.0, a) for a in alphas]
-            ax_r.scatter(thetas, dists, s=40, c=colors, edgecolors='none')
-        # Para evitar que se acumulen demasiados artistas, limpia y redibuja:
-        # (alternativamente, se puede guardar el scatter y actualizar offsets+alpha
-        # usando colecciones avanzadas.)
-
-        canvas_r.draw()
-        window.after(40, actualizar_radar_local)
-
-    actualizar_radar_local()
-
-Button(controls_frame, text="Mostrar Radar", command=abrir_radar, width=18, bg="#2CDF2C",fg='white').grid(row=31,column=0,pady=(4,6))
-
-# =================== Funciones graficado ===================
+# =================== Actualizar gráficas ===================
 def actualizar_graficas(force=False):
     line_temp.set_data(eje_x, temperaturas)
     line_hum.set_data(eje_x, humedades)
@@ -540,7 +703,8 @@ def leer_serial():
                         media_movil.append(sum(temperaturas[-N:])/N if len(temperaturas)>=N else float('nan'))
 
                     if len(temperaturas)>=3 and all(x>float(limiteVar.get()) for x in temperaturas[-3:]) and not alerta_activa:
-                        alerta_activa=True; messagebox.showwarning("Alerta", f"Últimas 3 temperaturas superan {limiteVar.get()} °C")
+                        alerta_activa=True
+                        messagebox.showwarning("Alerta", f"Últimas 3 temperaturas superan {limiteVar.get()} °C")
                         registrar_evento("ERRORES", f"Alerta temperatura: últimas 3 superan {limiteVar.get()} °C")
                     elif alerta_activa and len(temperaturas)>=3 and not all(x>float(limiteVar.get()) for x in temperaturas[-3:]):
                         alerta_activa=False
@@ -568,11 +732,11 @@ def leer_serial():
                 except Exception as e:
                     registrar_evento("ERRORES", f"Radar inválido: {raw} ({e})")
 
-            match = regex_orbit.search(raw)
-            if match:
-                x_orbit.append(float(match.group(1)))
-                y_orbit.append(float(match.group(2)))
-                z_orbit.append(float(match.group(3)))
+                match = regex_orbit.search(raw)
+                if match:
+                    x_orbit.append(float(match.group(1)))
+                    y_orbit.append(float(match.group(2)))
+                    z_orbit.append(float(match.group(3)))
 
             elif trozos[0]=='3':
                 registrar_evento("ERRORES", "Satélite: fallo DHT")
@@ -616,7 +780,9 @@ def ReanudarClick():
     ciclo_lectura()
 
 def ResetClick():
-    global temperaturas, humedades, eje_x, media_movil, i, radar_angulos, radar_distancias, alerta_activa, alerta_media_activa, x_orbit, y_orbit, z_orbit
+    global temperaturas, humedades, eje_x, media_movil, i
+    global radar_angulos, radar_distancias, alerta_activa, alerta_media_activa
+    global x_orbit, y_orbit, z_orbit
     temperaturas=[]; humedades=[]; eje_x=[]; media_movil=[]; i=0
     radar_angulos=[]; radar_distancias=[]
     x_orbit=[]; y_orbit=[]; z_orbit=[]
@@ -635,9 +801,5 @@ def on_close():
     window.destroy()
 
 window.protocol("WM_DELETE_WINDOW", on_close)
-
-# Opcional: inicializar radar y órbita al arrancar
-abrir_radar()
-abrir_sistema_orbital()
 
 window.mainloop()
