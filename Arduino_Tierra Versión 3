@@ -1,65 +1,113 @@
-//ESTACION TIERRA
+// ==============================
+// 🌍 ESTACIÓN TIERRA - ANTI SPAM
+// Alertas únicas + timeout largo
+// ==============================
 
 #include <SoftwareSerial.h>
 
 SoftwareSerial satSerial(10, 11); // RX, TX hacia satélite
 
-const int ledRx = 12;     // LED que parpadea al recibir datos
-const int ledAlerta = 13; // LED de alerta (fallo sensor)
+const int ledRx = 12;     // LED parpadea al recibir datos
+const int ledAlerta = 13; // LED alerta general
 
+// ---------- TIMING ----------
 unsigned long ultimoMensaje = 0;
-const unsigned long timeout = 5000; // 5 segundos sin mensaje -> alerta
+const unsigned long TIMEOUT_COMUNICACION = 15000; // ⏱️ 15 s (ANTES 5s)
+
+// ---------- ESTADOS DE ALERTA ----------
+bool alertaDHTActiva = false;
+bool alertaUltraActiva = false;
+bool alertaTimeoutActiva = false;
 
 void setup() {
   pinMode(ledRx, OUTPUT);
   pinMode(ledAlerta, OUTPUT);
-  
-  Serial.begin(9600);     // Comunicación con la interfaz Python
-  satSerial.begin(9600);  // Comunicación con el satélite
+
+  Serial.begin(9600);     // Comunicación con Python
+  satSerial.begin(9600);  // Comunicación con satélite
 
   Serial.println("Estación de Tierra lista");
   ultimoMensaje = millis();
 }
 
 void loop() {
-  // 1️⃣ Recepción de datos del satélite
+
+  // =================================
+  // 1️⃣ RECEPCIÓN DESDE EL SATÉLITE
+  // =================================
   if (satSerial.available()) {
     String data = satSerial.readStringUntil('\n');
     data.trim();
 
-    // Actualiza tiempo del último mensaje
     ultimoMensaje = millis();
 
-    // 🔹 LED parpadeo recepción
+    // LED RX
     digitalWrite(ledRx, HIGH);
-    delay(50);
+    delay(30);
     digitalWrite(ledRx, LOW);
 
-    // 🔸 Analizar mensajes de fallo/alerta
-    // Fallo DHT
+    // ---- RECUPERACIÓN DE TIMEOUT ----
+    if (alertaTimeoutActiva) {
+      alertaTimeoutActiva = false;
+      Serial.println("✅ Comunicación con satélite recuperada");
+    }
+
+    // ---------- FALLO DHT ----------
     if (data.startsWith("3:")) {
-      digitalWrite(ledAlerta, HIGH);
-      Serial.println("⚠️ Fallo sensor DHT");
+      if (!alertaDHTActiva) {
+        alertaDHTActiva = true;
+        Serial.println("⚠️ Fallo sensor DHT");
+      }
     }
-    // Fallo distancia
+
+    // ---------- FALLO ULTRASONIDOS ----------
     else if (data.startsWith("6:")) {
-      digitalWrite(ledAlerta, HIGH);
-      Serial.println("⚠️ Fallo sensor ultrasonido");
+      if (!alertaUltraActiva) {
+        alertaUltraActiva = true;
+        Serial.println("⚠️ Fallo sensor ultrasonido");
+      }
     }
-    // Mensaje normal de DHT o ultrasonido
+
+    // ---------- DATOS NORMALES ----------
     else {
-      digitalWrite(ledAlerta, LOW);
-      Serial.println(data); // reenvía todos los datos al Python
+      // Recuperación DHT
+      if (alertaDHTActiva) {
+        alertaDHTActiva = false;
+        Serial.println("✅ Sensor DHT recuperado");
+      }
+
+      // Recuperación ultrasonidos
+      if (alertaUltraActiva) {
+        alertaUltraActiva = false;
+        Serial.println("✅ Sensor ultrasonido recuperado");
+      }
+
+      Serial.println(data); // reenviar datos a Python
     }
   }
 
-  // 2️⃣ Timeout: si no llega nada desde el satélite
-  if (millis() - ultimoMensaje > timeout) {
-    digitalWrite(ledAlerta, HIGH);
+  // =================================
+  // 2️⃣ TIMEOUT DE COMUNICACIÓN
+  // =================================
+  if (!alertaTimeoutActiva &&
+      millis() - ultimoMensaje > TIMEOUT_COMUNICACION) {
+
+    alertaTimeoutActiva = true;
     Serial.println("⚠️ Sin comunicación con el satélite");
   }
 
-  // 3️⃣ Reenvío de comandos desde interfaz hacia el satélite
+  // =================================
+  // 3️⃣ LED DE ALERTA GLOBAL
+  // =================================
+  if (alertaDHTActiva || alertaUltraActiva || alertaTimeoutActiva) {
+    digitalWrite(ledAlerta, HIGH);
+  } else {
+    digitalWrite(ledAlerta, LOW);
+  }
+
+  // =================================
+  // 4️⃣ COMANDOS DESDE PYTHON → SATÉLITE
+  // =================================
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
@@ -68,3 +116,4 @@ void loop() {
     }
   }
 }
+
