@@ -257,7 +257,7 @@ def abrir_visor_eventos():
 
 Button(controls_frame, text="Abrir Visor de Eventos", command=abrir_visor_eventos, width=18, bg="#C4243F",fg='white').grid(row=29, column=0, pady=(4,6))
 
-# =================== Ventana órbita 3D ===================
+# =================== Ventana órbita 3D (Tierra texturizada realista) ===================
 def abrir_sistema_orbital():
     ventana_orbital = Toplevel(window)
     ventana_orbital.title("Órbita Satélite 3D")
@@ -273,43 +273,50 @@ def abrir_sistema_orbital():
 
     from PIL import Image
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    img_path = os.path.join(script_dir, "world.jpg")
-    try:
-        img_local = Image.open(img_path)
-        img_local = np.array(img_local) / 255.0
+    # Usa una textura de Tierra de alta resolución en la misma carpeta
+    texture_path = os.path.join(script_dir, "earth_hd.jpg")
 
-        num_u, num_v = 60, 35
-        img_pil = Image.fromarray((img_local*255).astype(np.uint8))
-        img_resized = img_pil.resize((num_u, num_v))
-        img_texture = np.array(img_resized) / 255.0
-        img_texture = img_texture[:, :, :3]
+    img_texture = None
+    try:
+        # Cargar imagen y normalizar
+        earth_img = Image.open(texture_path)
+        earth_img = earth_img.resize((1024, 512))  # resolución suficiente para ver continentes
+        img_texture = np.array(earth_img) / 255.0
+        if img_texture.shape[2] == 4:  # si hay canal alfa, quitarlo
+            img_texture = img_texture[:, :, :3]
     except FileNotFoundError:
-        print("No se encontró 'world.jpg'. La Tierra será opaca.")
+        print("No se encontró 'earth_hd.jpg'. Usa una imagen equirectangular detallada en la carpeta del script.")
         img_texture = None
 
+    # Esfera de la Tierra
     R_EARTH_3D = 3.5e6
-    num_u, num_v = 50, 25
-    u = np.linspace(0, 2*np.pi, num_u)
-    v = np.linspace(0, np.pi, num_v)
-    u, v = np.meshgrid(u, v)
-    x_sphere = R_EARTH_3D * np.cos(u) * np.sin(v)
-    y_sphere = R_EARTH_3D * np.sin(u) * np.sin(v)
-    z_sphere = R_EARTH_3D * np.cos(v)
+    n_lon = img_texture.shape[1] if img_texture is not None else 360
+    n_lat = img_texture.shape[0] if img_texture is not None else 180
+
+    lon = np.linspace(-np.pi, np.pi, n_lon)
+    lat = np.linspace(-np.pi/2, np.pi/2, n_lat)
+    lon, lat = np.meshgrid(lon, lat)
+
+    x_sphere = R_EARTH_3D * np.cos(lat) * np.cos(lon)
+    y_sphere = R_EARTH_3D * np.cos(lat) * np.sin(lon)
+    z_sphere = R_EARTH_3D * np.sin(lat)
 
     if img_texture is not None:
+        # Invertir eje vertical porque las imágenes suelen estar con latitud invertida
+        img_tex_flipped = np.flipud(img_texture)
         ax_local.plot_surface(
             x_sphere, y_sphere, z_sphere,
             rstride=1, cstride=1,
-            facecolors=img_texture,
+            facecolors=img_tex_flipped,
             linewidth=0, antialiased=False, shade=False
         )
     else:
         ax_local.plot_surface(
             x_sphere, y_sphere, z_sphere,
-            color='green', linewidth=0, antialiased=True, shade=True
+            color='lightblue', linewidth=0, antialiased=True, shade=True
         )
 
-    orbit_line, = ax_local.plot([], [], [], '-', linewidth=2, color='blue', label='Trayectoria')
+    orbit_line, = ax_local.plot([], [], [], '-', linewidth=2, color='yellow', label='Órbita')
     satellite_marker, = ax_local.plot([], [], [], 'o', markersize=8, color='red', label='Satélite')
     ax_local.legend()
 
@@ -350,20 +357,16 @@ def abrir_radar():
     fig_radar.patch.set_facecolor("black")
     ax_r.set_facecolor("black")
 
-    # 0° hacia arriba, giro horario
     ax_r.set_theta_zero_location('N')
     ax_r.set_theta_direction(-1)
 
-    # Ángulos visibles 0–180 pero mantenemos el círculo completo (0–360)
     ax_r.set_thetamin(0)
     ax_r.set_thetamax(360)
 
-    # Escala radial coherente con sensor (0–400 cm)
     ax_r.set_rlim(0, 400)
     ax_r.set_rticks(range(0, 401, 50))
     ax_r.set_yticklabels([str(r) for r in range(0, 401, 50)], color="#00ff80", fontsize=8)
 
-    # Ticks angulares cada 30 grados
     ang_ticks = np.deg2rad(np.arange(0, 360, 30))
     ax_r.set_xticks(ang_ticks)
     ax_r.set_xticklabels([f"{deg}°" for deg in range(0, 360, 30)], color="#00ff80", fontsize=8)
@@ -374,7 +377,6 @@ def abrir_radar():
 
     ax_r.set_title("Radar ultrasónico", color='lime')
 
-    # Texto para mostrar último eco (ángulo/distancia)
     info_text = ax_r.text(0.5, 1.05, "", transform=ax_r.transAxes,
                           ha="center", va="bottom", color="white", fontsize=10)
 
@@ -399,7 +401,6 @@ def abrir_radar():
         frame_counter["n"] += 1
         frame = frame_counter["n"]
 
-        # Haz barre todo el círculo para que el efecto sea fluido
         angle = (frame % 360) * math.pi / 180.0
 
         r = np.linspace(0, 400, 200)
@@ -413,14 +414,12 @@ def abrir_radar():
             line.set_data(last_theta, last_r)
             last_theta, last_r = lt, lr
 
-        # Ecos reales desde radar_angulos / radar_distancias (ya en cm y 0–180°)
         if radar_angulos:
             t = [math.radians(a) for a in radar_angulos]
             d = radar_distancias
             offsets = np.column_stack([t, d])
             echo_scatter.set_offsets(offsets)
 
-            # Mostrar info del último eco
             ang_last = radar_angulos[-1]
             dist_last = radar_distancias[-1]
             info_text.set_text(f"Ángulo: {ang_last:.1f}°   Distancia: {dist_last:.1f} cm")
@@ -429,7 +428,6 @@ def abrir_radar():
             info_text.set_text("Sin ecos")
 
         canvas_r.draw()
-        # Actualización rápida (20 ms) para acercarse a tiempo real
         ventana_radar.after(20, actualizar_radar_local)
 
     actualizar_radar_local()
