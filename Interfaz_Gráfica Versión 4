@@ -47,7 +47,7 @@ lectura_activa = False
 
 radar_angulos = []
 radar_distancias = []
-RADAR_MAX_POINTS = 3
+RADAR_MAX_POINTS = 10
 last_angle_received = None
 modo_media = "python"
 
@@ -129,7 +129,7 @@ def send_intervalo_dht():
 Button(controls_frame, text="Enviar intervalo DHT:",command=send_intervalo_dht, width=18).grid(row=7,column=0,pady=(4,8))
 
 Label(controls_frame, text="Intervalo ultrasonidos (ms):").grid(row=8,column=0, sticky=W)
-intervaloUltraVar = IntVar(value=500)
+intervaloUltraVar = IntVar(value=300)
 Spinbox(controls_frame, from_=50, to=10000, textvariable=intervaloUltraVar, width=8).grid(row=9,column=0, sticky=W)
 
 def send_intervalo_ultra():
@@ -342,26 +342,41 @@ Button(controls_frame, text="Abrir Sistema Orbital 3D", command=abrir_sistema_or
 def abrir_radar():
     ventana_radar = Toplevel(window)
     ventana_radar.title("Radar Ultrasónico Épico")
-    ventana_radar.geometry("600x600")
+    ventana_radar.geometry("650x650")
 
-    fig_radar = Figure(figsize=(6,6), dpi=100)
+    fig_radar = Figure(figsize=(6.2,6.2), dpi=100)
     ax_r = fig_radar.add_subplot(111, polar=True)
 
     fig_radar.patch.set_facecolor("black")
     ax_r.set_facecolor("black")
 
+    # 0° hacia arriba, giro horario
     ax_r.set_theta_zero_location('N')
     ax_r.set_theta_direction(-1)
+
+    # Ángulos visibles 0–180 pero mantenemos el círculo completo (0–360)
     ax_r.set_thetamin(0)
     ax_r.set_thetamax(360)
+
+    # Escala radial coherente con sensor (0–400 cm)
     ax_r.set_rlim(0, 400)
+    ax_r.set_rticks(range(0, 401, 50))
+    ax_r.set_yticklabels([str(r) for r in range(0, 401, 50)], color="#00ff80", fontsize=8)
+
+    # Ticks angulares cada 30 grados
+    ang_ticks = np.deg2rad(np.arange(0, 360, 30))
+    ax_r.set_xticks(ang_ticks)
+    ax_r.set_xticklabels([f"{deg}°" for deg in range(0, 360, 30)], color="#00ff80", fontsize=8)
 
     ax_r.grid(color="#008000", alpha=0.4)
     ax_r.spines['polar'].set_color("#00ff80")
     ax_r.tick_params(colors="#00ff80")
-    ax_r.set_xticklabels([])
-    ax_r.set_yticklabels([])
+
     ax_r.set_title("Radar ultrasónico", color='lime')
+
+    # Texto para mostrar último eco (ángulo/distancia)
+    info_text = ax_r.text(0.5, 1.05, "", transform=ax_r.transAxes,
+                          ha="center", va="bottom", color="white", fontsize=10)
 
     canvas_r = FigureCanvasTkAgg(fig_radar, master=ventana_radar)
     canvas_r.draw()
@@ -384,6 +399,7 @@ def abrir_radar():
         frame_counter["n"] += 1
         frame = frame_counter["n"]
 
+        # Haz barre todo el círculo para que el efecto sea fluido
         angle = (frame % 360) * math.pi / 180.0
 
         r = np.linspace(0, 400, 200)
@@ -397,16 +413,24 @@ def abrir_radar():
             line.set_data(last_theta, last_r)
             last_theta, last_r = lt, lr
 
+        # Ecos reales desde radar_angulos / radar_distancias (ya en cm y 0–180°)
         if radar_angulos:
             t = [math.radians(a) for a in radar_angulos]
             d = radar_distancias
             offsets = np.column_stack([t, d])
             echo_scatter.set_offsets(offsets)
+
+            # Mostrar info del último eco
+            ang_last = radar_angulos[-1]
+            dist_last = radar_distancias[-1]
+            info_text.set_text(f"Ángulo: {ang_last:.1f}°   Distancia: {dist_last:.1f} cm")
         else:
             echo_scatter.set_offsets(np.empty((0, 2)))
+            info_text.set_text("Sin ecos")
 
         canvas_r.draw()
-        ventana_radar.after(40, actualizar_radar_local)
+        # Actualización rápida (20 ms) para acercarse a tiempo real
+        ventana_radar.after(20, actualizar_radar_local)
 
     actualizar_radar_local()
 
@@ -441,9 +465,6 @@ def leer_serial():
             raw = mySerial.readline().decode('utf-8', errors='ignore').strip()
             if not raw:
                 continue
-
-            # DEBUG opcional:
-            # print("RAW:", raw)
 
             if raw.startswith("CHK:"):
                 try:
@@ -515,7 +536,7 @@ def leer_serial():
                 except Exception as e:
                     registrar_evento("ERRORES", f"Radar inválido: {raw} ({e})")
 
-            # Órbita (texto tipo "Orbit | Time: ...")
+            # Órbita
             match = regex_orbit.search(raw)
             if match:
                 x_orbit.append(float(match.group(1)))
