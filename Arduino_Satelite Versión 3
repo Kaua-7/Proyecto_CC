@@ -1,5 +1,5 @@
 // =====================================================
-// 🛰️ SATÉLITE v4.4 FINAL
+// 🛰️ SATÉLITE v4.4 FINAL - SERVOMOTOR CORREGIDO
 // DHT + Ultrasonidos + Servo + Órbita + Checksum + LoRa
 // =====================================================
 
@@ -182,8 +182,8 @@ void procesarComando(String cmd) {
 
     case 2: { // servo manual
       angulo = constrain(val.toInt(), 0, 180);
-      servoMotor.write(angulo);
-      modoBarrido = false;
+      modoBarrido = false; // Apaga el barrido
+      servoMotor.write(angulo); // Escribe inmediatamente
       sendMsg("5:SERVO=" + String(angulo));
       break;
     }
@@ -273,28 +273,29 @@ void loop() {
     float t = dht.readTemperature();
     float h = dht.readHumidity();
 
-    if (isnan(t) || isnan(h)) {
-      sendMsg("3:");
-    } else {
-      pushTemp(t);
-      String msg = "1:" + String(t, 2) + ":" + String(h, 2);
-      if (arduinoComputeAvg)
-        msg += ":A:" + String(computeAvg(), 2);
-      sendMsg(msg);
-    }
+    if (!isnan(t) && !isnan(h)) pushTemp(t);
+    String msg = "1:" + String(t, 2) + ":" + String(h, 2);
+    if (arduinoComputeAvg) msg += ":A:" + String(computeAvg(), 2);
+    sendMsg(msg);
   }
 
   // 3️⃣ SERVO + RADAR (SINCRONIZADOS)
-  if (modoBarrido && millis() >= nextServo) {
-    nextServo = millis() + intervaloServo;
+  if (modoBarrido) {
+    if (millis() >= nextServo) {
+      nextServo = millis() + intervaloServo;
 
-    angulo += PASO * direccion;
-    if (angulo >= 180 || angulo <= 0) direccion *= -1;
+      angulo += PASO * direccion;
+      if (angulo >= 180 || angulo <= 0) direccion *= -1;
+      servoMotor.write(angulo);
+
+      float d = medirDistancia();
+      if (d < 0) sendMsg("6:");
+      else sendMsg("2:" + String(angulo) + ":" + String(d, 2));
+    }
+  }
+  else {
+    // Modo manual: escribe constantemente el ángulo actual
     servoMotor.write(angulo);
-
-    float d = medirDistancia();
-    if (d < 0) sendMsg("6:");
-    else sendMsg("2:" + String(angulo) + ":" + String(d, 2));
   }
 
   // 4️⃣ ÓRBITA
@@ -303,4 +304,3 @@ void loop() {
     enviarOrbita(millis());
   }
 }
-
