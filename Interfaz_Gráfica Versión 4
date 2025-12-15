@@ -1,6 +1,3 @@
-
-#CODE SIN 2D RADAR EN WINDOW APARTEQUE FUNCIONA PERFECTO: INTERVALO DHT, RADAR, ALARMA, TIERRA ORBIT 3D, SERVO
-#NO FUNCIONA GRAFICA MEDIA
 # =================== CODIGO COMPLETO CON ORBITA FUNCIONAL, CHECKSUM, REGISTRO Y VISOR DE EVENTOS ===================
 
 import serial
@@ -14,16 +11,6 @@ import re
 import datetime
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D
-
-
-#EL LIMITE DE TEMPERATURA SALE EL AVISO PERO NO SE PONE LA ALARMA
-#QUITAR ORBITA 2D
-#LOL LA TIERRA AL EMPEZAR LA ORBITA SALE UN CILINDRO
-#SERVO NO SE MUEVE
-#DA FALLO EL SENSOR DE TEMPERATURA
-
-
-
 
 # =================== Configuración puerto ===================
 device = 'COM6'  # Cambia al puerto correcto
@@ -48,7 +35,6 @@ def recalcular_media():
     media_movil = nueva_media
     actualizar_graficas(force=True)
 
-
 alerta_activa = False
 alerta_media_activa = False
 limite_temp = 30.0
@@ -64,7 +50,6 @@ modo_media = "python"
 
 last_dht_accepted_ms = 0
 
-# =================== Variables órbita ===================
 # =================== Variables órbita ===================
 x_orbit = []
 y_orbit = []
@@ -99,10 +84,7 @@ fig = plt.figure(figsize=(12, 9))
 ax1 = fig.add_subplot(3, 1, 1)   # Temperatura (fila 1)
 ax2 = fig.add_subplot(3, 1, 2)   # Humedad (fila 2)
 ax3 = fig.add_subplot(3, 1, 3)   # Media móvil (fila 3)
-
 ax_radar = None   # radar eliminado del layout principal
-
-
 
 # --- Inicializar líneas ---
 line_temp, = ax1.plot([], [], linestyle='-', marker=None, color='red', label="Temperatura")
@@ -111,16 +93,6 @@ line_hum, = ax2.plot([], [], linestyle='-', marker=None, color='blue', label="Hu
 ax2.set_title("Humedad (%)"); ax2.grid(True); ax2.legend()
 line_avg, = ax3.plot([], [], linestyle='-', marker=None, color='green', label="Media móvil")
 ax3.set_title("Media móvil"); ax3.grid(True); ax3.legend()
-
-# --- Radar ---
-#ax_radar.set_facecolor("black")
-#ax_radar.set_theta_zero_location('N')
-#ax_radar.set_theta_direction(-1)
-#ax_radar.set_rlim(0, 400)
-#ax_radar.set_thetamin(0)
-#ax_radar.set_thetamax(180)
-#ax_radar.set_title("Radar ultrasónico", color='lime')
-
 
 # --- Integración Matplotlib en Tkinter ---
 canvas = FigureCanvasTkAgg(fig, master=window)
@@ -140,7 +112,6 @@ Label(controls_frame, text="Ventana media móvil (N):").grid(row=3,column=0, sti
 ventanaVar = IntVar(value=ventana_default)
 Spinbox(controls_frame, from_=1, to=200, textvariable=ventanaVar, width=6).grid(row=4,column=0, sticky=W)
 ventanaVar.trace_add("write", lambda *args: recalcular_media())
-
 
 Label(controls_frame, text="Intervalo envío DHT (s):").grid(row=5,column=0, sticky=W, pady=(6,0))
 intervaloDHTVar = IntVar(value=3)
@@ -181,16 +152,18 @@ Entry(controls_frame, textvariable=anguloVar, width=6).grid(row=15,column=0, sti
 def enviar_angulo():
     try:
         ang = int(anguloVar.get())
-        if 0 <= ang <= 180: 
+        if 0 <= ang <= 180:
             mySerial.write(f"2:{ang}\n".encode())
             registrar_evento("COMANDOS", f"Enviar ángulo servo: {ang}°")
         else: messagebox.showerror("Error", "Ángulo debe estar entre 0 y 180")
     except: messagebox.showerror("Error", "Ángulo inválido")
 Button(controls_frame, text="Enviar ángulo", command=enviar_angulo, width=18, bg="#03346D", fg='white').grid(row=16,column=0,pady=(4,6))
 
+# Botones de barrido
 Button(controls_frame, text="Activar Barrido", command=lambda: mySerial.write(b"6:1\n"), width=18, bg="#19BB0A", fg='white').grid(row=17,column=0,pady=3)
 Button(controls_frame, text="Detener Barrido", command=lambda: mySerial.write(b"6:0\n"), width=18, bg="#E50606", fg='white').grid(row=18,column=0,pady=3)
 
+# Etiqueta alarma
 Label(controls_frame, text="Estado alarma (medias):").grid(row=23, column=0, sticky=W, pady=(8,0))
 alarma_media_label = Label(controls_frame, text="NORMAL", bg="lightgreen",fg='black', width=18)
 alarma_media_label.grid(row=24, column=0, pady=(2,8))
@@ -199,7 +172,6 @@ alarma_media_label.grid(row=24, column=0, pady=(2,8))
 Label(controls_frame, text="Registrar Observación:").grid(row=26, column=0, sticky=W, pady=(8,0))
 observacionVar = StringVar()
 Entry(controls_frame, textvariable=observacionVar, width=25).grid(row=27, column=0, sticky=W)
-
 
 def registrar_observacion():
     obs = observacionVar.get().strip()
@@ -274,110 +246,7 @@ def abrir_visor_eventos():
 
 Button(controls_frame, text="Abrir Visor de Eventos", command=abrir_visor_eventos, width=18, bg="#C4243F",fg='white').grid(row=29, column=0, pady=(4,6))
 
-# NEW WINDOW PARA ORBITA SATELITE
-def abrir_sistema_orbital():
-    ventana_orbital = Toplevel(window)
-    ventana_orbital.title("Órbita Satélite 3D")
-    ventana_orbital.geometry("700x700")
-
-    # Figura 3D
-    fig_local = Figure(figsize=(6,6), dpi=100)
-    ax_local = fig_local.add_subplot(111, projection='3d')
-    ax_local.set_title("Órbita Satélite 3D")
-    ax_local.set_xlabel("X (m)")
-    ax_local.set_ylabel("Y (m)")
-    ax_local.set_zlabel("Z (m)")
-    ax_local.grid(True)
-
-    # --- Agregar Tierra opaca ---
-    import numpy as np
-    R_EARTH_3D = 3.5e6
-    u = np.linspace(0, 2 * np.pi, 50)
-    v = np.linspace(0, np.pi, 50)
-    x_sphere = R_EARTH_3D * np.outer(np.cos(u), np.sin(v))
-    y_sphere = R_EARTH_3D * np.outer(np.sin(u), np.sin(v))
-    z_sphere = R_EARTH_3D * np.outer(np.ones(np.size(u)), np.cos(v))
-    ax_local.plot_surface(x_sphere, y_sphere, z_sphere, color='green', alpha=1.0, linewidth=0, antialiased=True, shade=True)
-
-    # Línea de la órbita y marcador del satélite
-    orbit_line, = ax_local.plot([], [], [], '-', linewidth=2, color='blue', label='Trayectoria')
-    satellite_marker, = ax_local.plot([], [], [], 'o', markersize=8, color='red', label='Satélite')
-    ax_local.legend()
-
-    # Integración con Tkinter
-    canvas_local = FigureCanvasTkAgg(fig_local, master=ventana_orbital)
-    canvas_local.draw()
-    canvas_local.get_tk_widget().pack(fill=BOTH, expand=True)
-
-    # Función de actualización
-    def actualizar_local():
-        if x_orbit and y_orbit and z_orbit:
-            orbit_line.set_data(x_orbit, y_orbit)
-            orbit_line.set_3d_properties(z_orbit)
-            satellite_marker.set_data(x_orbit[-1:], y_orbit[-1:])
-            satellite_marker.set_3d_properties(z_orbit[-1:])
-
-            # Ajustar límites automáticamente con margen y mantener aspecto igual
-            all_vals = x_orbit + y_orbit + z_orbit
-            val_max = max(abs(min(all_vals)), abs(max(all_vals))) + 1e5
-            ax_local.set_xlim(-val_max, val_max)
-            ax_local.set_ylim(-val_max, val_max)
-            ax_local.set_zlim(-val_max, val_max)
-            ax_local.set_box_aspect([1,1,1])
-
-        canvas_local.draw()
-        ventana_orbital.after(500, actualizar_local)
-
-    actualizar_local()
-
-Button(controls_frame, text="Abrir Sistema Orbital 3D", command=abrir_sistema_orbital, width=18, bg='#00aaff', fg='black').grid(row=30, column=0, pady=(4,6))
-
-def abrir_radar():
-    ventana_radar = Toplevel(window)
-    ventana_radar.title("Radar Ultrasónico")
-    ventana_radar.geometry("600x600")
-
-    fig_radar = Figure(figsize=(6,6), dpi=100)
-    ax_r = fig_radar.add_subplot(111, polar=True)
-
-    ax_r.set_facecolor("black")
-    ax_r.set_theta_zero_location('N')
-    ax_r.set_theta_direction(-1)
-    ax_r.set_rlim(0, 400)
-    ax_r.set_thetamin(0)
-    ax_r.set_thetamax(180)
-    ax_r.set_title("Radar ultrasónico", color='lime')
-
-    canvas_r = FigureCanvasTkAgg(fig_radar, master=ventana_radar)
-    canvas_r.draw()
-    canvas_r.get_tk_widget().pack(fill=BOTH, expand=True)
-
-    def actualizar_radar_local():
-        ax_r.clear()
-        ax_r.set_facecolor("black")
-        ax_r.set_theta_zero_location('N')
-        ax_r.set_theta_direction(-1)
-        ax_r.set_rlim(0, 400)
-        ax_r.set_thetamin(0)
-        ax_r.set_thetamax(180)
-        ax_r.set_title("Radar ultrasónico", color='green')
-
-        if radar_angulos:
-            t = [math.radians(a) for a in radar_angulos]
-            r = radar_distancias
-            if len(t) > 1:
-                ax_r.plot(t, r, color='lime', linewidth=1.2)
-            ax_r.scatter([t[-1]], [r[-1]], c='lime', s=100, edgecolors='k')
-
-        canvas_r.draw()
-        ventana_radar.after(1000, actualizar_radar_local)
-
-    actualizar_radar_local()
-Button(controls_frame, text="Abrir Radar", command=abrir_radar, width=18, bg="#2CDF2C",fg='white').grid(row=31,column=0,pady=(4,6))
-
-
 # =================== Funciones graficado ===================
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 def actualizar_graficas(force=False):
     # DHT
     line_temp.set_data(eje_x, temperaturas)
@@ -397,12 +266,7 @@ def actualizar_graficas(force=False):
     ax2.relim(); ax2.autoscale_view()
     ax3.relim(); ax3.autoscale_view()
 
-    # --- ESTA LÍNEA ES LA QUE FALTABA ---
     canvas.draw()
-
-
-    # Radar movido a su ventana independiente
-
 
 # =================== Lectura serie con checksum ===================
 def leer_serial():
@@ -467,91 +331,34 @@ def leer_serial():
                     else:
                         alerta_media_activa=False; alarma_media_label.config(text="Normal", bg="lightgreen")
 
-                    # --- Radar ---
+            # --- Radar / Servo ---
             elif len(trozos) >= 3 and trozos[0] == '2':
-                try: 
+                try:
                     ang = float(trozos[1])
                     dist = float(trozos[2])
                     last_angle_received = ang
-
                     if 0 <= ang <= 180:
                         radar_angulos.append(ang)
                         radar_distancias.append(dist)
-                        # Limitar puntos almacenados
                         while len(radar_angulos) > RADAR_MAX_POINTS:
-                            radar_angulos.pop(0)
-                            radar_distancias.pop(0)
-                    else:
-                        registrar_evento("ERRORES", f"Ángulo radar inválido: {ang}")
-
-                except Exception as e:
-                    registrar_evento("ERRORES", f"Radar inválido: {raw} ({e})")
+                            radar_angulos.pop(0); radar_distancias.pop(0)
+                except: pass
 
             # --- Órbita ---
-            match = regex_orbit.search(raw)
-            if match:
-                x_orbit.append(float(match.group(1)))
-                y_orbit.append(float(match.group(2)))
-                z_orbit.append(float(match.group(3)))
+            elif len(trozos) >= 5 and trozos[0] == '4':
+                try:
+                    x_orbit.append(float(trozos[2])/1e6); y_orbit.append(float(trozos[3])/1e6); z_orbit.append(float(trozos[4])/1e6)
+                except: pass
 
+            actualizar_graficas(force=True)
 
-            # --- Otros mensajes ---
-            elif trozos[0]=='3': registrar_evento("ERRORES", "Satélite: fallo DHT")
-            elif trozos[0]=='5': registrar_evento("INFO SATELITE", "Satélite msg: " + ":".join(trozos[1:]))
-            elif trozos[0]=='6': registrar_evento("ERRORES", "Satélite: fallo sensor distancia")
-            else: registrar_evento("INFO SATELITE", "Otro mensaje: " + raw)
+    except Exception as e:
+        registrar_evento("ERRORES", f"Error lectura serie: {e}")
 
-    except serial.SerialException as e:
-        print("Error puerto serie:", e)
-        registrar_evento("ERRORES", f"Error puerto serie: {e}")
+# =================== Loop principal ===================
+def loop_principal():
+    leer_serial()
+    window.after(100, loop_principal)
 
-# =================== Ciclo lectura ===================
-def ciclo_lectura():
-    if lectura_activa:
-        leer_serial()
-        actualizar_graficas()
-        window.after(100, ciclo_lectura)
-
-# =================== Controles iniciar/parar/reset ===================
-def IniciarClick():
-    global lectura_activa
-    lectura_activa=True
-    try: mySerial.write(b'Iniciar\n')
-    except: pass
-    ciclo_lectura()
-def PararClick():
-    global lectura_activa
-    lectura_activa=False
-    try: mySerial.write(b'Parar\n')
-    except: pass
-def ReanudarClick():
-    global lectura_activa
-    lectura_activa=True
-    try: mySerial.write(b'Iniciar\n')
-    except: pass
-    ciclo_lectura()
-def ResetClick():
-    global temperaturas, humedades, eje_x, media_movil, i, radar_angulos, radar_distancias, alerta_activa, alerta_media_activa, x_orbit, y_orbit
-    temperaturas=[]; humedades=[]; eje_x=[]; media_movil=[]; i=0
-    radar_angulos=[]; radar_distancias=[]
-    x_orbit=[]; y_orbit=[]
-    alerta_activa=False; alerta_media_activa=False
-    alarma_media_label.config(text="Normal", bg="lightgreen")
-    try: mySerial.write(b'6:1\n')
-    except: pass
-    actualizar_graficas(force=True)
-
-Button(controls_frame, text="Iniciar", bg="#19BB0A", fg='white', command=IniciarClick, width=18).grid(row=19,column=0,pady=(8,2))
-Button(controls_frame, text="Parar", bg="#E50606", fg='white', command=PararClick, width=18).grid(row=20,column=0,pady=2)
-Button(controls_frame, text="Reanudar", bg="#EA7A12", fg='white', command=ReanudarClick, width=18).grid(row=21,column=0,pady=2)
-Button(controls_frame, text="Reset (reactiva barrido)", bg="#EFE410", fg='white', command=ResetClick, width=18).grid(row=22,column=0,pady=(6,2))
-
-# =================== Cierre ===================
-def on_close():
-    global lectura_activa
-    lectura_activa=False
-    try: mySerial.close()
-    except: pass
-    window.destroy()
-window.protocol("WM_DELETE_WINDOW", on_close)
+loop_principal()
 window.mainloop()
