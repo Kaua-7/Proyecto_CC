@@ -1,11 +1,11 @@
 // =====================================================
-// 🛰️ SATÉLITE v4.6 - Compatible GUI base
-// DHT + Ultrasonidos + Servo + Órbita + Checksum
+// 🛰️ SATÉLITE v4.7 - DHT + Ultrasonidos + Servo + Órbita + LCD + Checksum
 // =====================================================
 
 #include <SoftwareSerial.h>
 #include <DHT.h>
 #include <Servo.h>
+#include <LiquidCrystal.h>
 
 // ------------------ PINES ------------------
 #define DHTPIN 2
@@ -16,15 +16,25 @@
 #define MOTORPIN 12
 #define LEDRX 13
 
+// Pines del LCD (ajusta a tu cableado real)
+#define LCD_RS 3
+#define LCD_E  4
+#define LCD_D4 5
+#define LCD_D5 8
+#define LCD_D6 A0
+#define LCD_D7 A1
+
 // ------------------ OBJETOS ------------------
 SoftwareSerial mySerial(10, 11); // RX, TX hacia estación (puente)
 DHT dht(DHTPIN, DHTTYPE);
 Servo servoMotor;
+LiquidCrystal lcd(LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
 
 // ------------------ ESTADO GLOBAL ------------------
-bool transmitiendo = false;
-bool modoBarrido   = false;   // true = barrido automático, false = manual
-bool arduinoComputeAvg = false;
+bool transmitiendo      = false;
+bool modoBarrido        = false;   // true = barrido automático, false = manual
+bool arduinoComputeAvg  = false;
+bool amenazaActiva      = false;   // ← NUEVO: estado de amenaza en el LCD
 
 // ------------------ TIEMPOS ------------------
 unsigned long intervaloHT    = 5000;
@@ -148,7 +158,7 @@ void procesarComando(String cmd) {
   // ---------- COMANDOS TEXTO ----------
   if (cmd == "Iniciar") {
     transmitiendo = true;
-    modoBarrido  = true;                 // ← activar barrido al iniciar
+    modoBarrido  = true;                 // activar barrido al iniciar
     nextHT = nextServo = nextOrbit = millis();
     sendMsg("5:INICIADO");
     return;
@@ -192,7 +202,7 @@ void procesarComando(String cmd) {
       break;
     }
 
-    case 7: { // intervalo ultrasonidos (no se usa aún en lógica)
+    case 7: { // intervalo ultrasonidos
       intervaloUltra = constrain(val.toInt(), 100, 10000);
       sendMsg("5:ULTRA_MS=" + String(intervaloUltra));
       break;
@@ -230,6 +240,12 @@ void setup() {
   dht.begin();
   Serial.begin(9600);   // depuración local
   mySerial.begin(9600); // hacia puente
+
+  // LCD
+  lcd.begin(16, 2);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SATELITE LISTO");
 
   r = R_EARTH + ALTITUDE;
   real_orbital_period = 2 * PI * sqrt(pow(r, 3) / (G * M));
@@ -269,7 +285,7 @@ void loop() {
     sendMsg(msg);
   }
 
-  // 3️⃣ SERVO + RADAR
+  // 3️⃣ SERVO + RADAR + AMENAZA LCD
   if (modoBarrido) {
     if (millis() >= nextServo) {
       nextServo = millis() + intervaloServo;
@@ -287,21 +303,22 @@ void loop() {
         sendMsg(s);
         Serial.print("DBG RADAR_OK "); Serial.println(s);
 
-        // 👉 AQUÍ AÑADIMOS LA LÓGICA DE AMENAZA
+        // ------- LÓGICA AMENAZA EN LCD -------
         if (d > 0 && d < 50.0) {
           if (!amenazaActiva) {
             amenazaActiva = true;
             lcd.clear();
             lcd.setCursor(0, 0);
             lcd.print("AMENAZA");
+            sendMsg("5:AMENAZA_ON");
           }
         } else if (d >= 50.0) {
           if (amenazaActiva) {
             amenazaActiva = false;
-            lcd.clear();             // borra el mensaje
-            // Si quieres mostrar algo por defecto:
+            lcd.clear();
             lcd.setCursor(0, 0);
             lcd.print("AREA SEGURA");
+            sendMsg("5:AMENAZA_OFF");
           }
         }
       }
@@ -309,7 +326,6 @@ void loop() {
   } else {
     servoMotor.write(angulo);
   }
-
 
   // 4️⃣ ÓRBITA
   if (millis() >= nextOrbit) {
