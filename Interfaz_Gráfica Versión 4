@@ -19,8 +19,10 @@ import re
 import datetime
 import os
 
-# =================== Configuración puerto serie ===================
+# =================== CONFIG ===================
 device = 'COM5'  # Cambia al puerto correcto
+MAP_IMAGE_PATH = r"C:\Users\kauav\Desktop\Versión 4\world.200412.3x5400x2700.jpg"
+
 mySerial = serial.Serial(device, 9600, timeout=1)
 
 # =================== Variables de datos ===================
@@ -37,7 +39,6 @@ i = 0
 lectura_activa = False
 
 # ---- Radar: ecos con edad ----
-# Cada eco: {"ang": grados, "dist": cm, "age": frames}
 radar_echoes = []
 RADAR_MAX_POINTS = 50
 RADAR_MAX_AGE = 10
@@ -50,7 +51,8 @@ last_dht_accepted_ms = 0
 x_orbit = []
 y_orbit = []
 z_orbit = []
-R_EARTH = 3.5e6
+R_EARTH = 3.5e6  # radio para esfera 3D
+MAX_ORBIT_POINTS = 2000  # límite para mejorar rendimiento
 
 regex_orbit = re.compile(
     r"Orbit \| Time: [\d\.]+ s \| X: ([\d\.-]+) m, Y: ([\d\.-]+) m, Z: ([\d\.-]+)"
@@ -260,9 +262,8 @@ def abrir_radar():
 
     def actualizar_radar_local():
         frame_counter["n"] += 1
-        frame = frame_counter["n"]
 
-        angle_deg = -90 + (frame * 2.0) % 180
+        angle_deg = -90 + (frame_counter["n"] * 2.0) % 180
         angle = math.radians(angle_deg)
 
         r = np.linspace(0, 400, 200)
@@ -306,26 +307,48 @@ def abrir_radar():
             info_text.set_text("Sin ecos")
 
         canvas_r.draw()
-        window.after(30, actualizar_radar_local)
+        window.after(60, actualizar_radar_local)
 
     actualizar_radar_local()
 
 
 abrir_radar()
 
-# =================== 3) Órbita ===================
-add_fullscreen_header(frame_orbita, "Órbita satélite")
+# =================== 3) Órbita: 3D + mapa ===================
+add_fullscreen_header(frame_orbita, "Órbita / Mapa mundi")
 
 orbita_inner = Frame(frame_orbita, bg=CARD_BG)
 orbita_inner.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
 orbita_inner.grid_rowconfigure(0, weight=1)
 orbita_inner.grid_columnconfigure(0, weight=1)
 
+orbit_mode = StringVar(value="3d")
 
-def abrir_sistema_orbital():
-    for w in orbita_inner.winfo_children():
-        w.destroy()
+frame_orbit3d = Frame(orbita_inner, bg=CARD_BG)
+frame_orbitmap = Frame(orbita_inner, bg=CARD_BG)
+for fr in (frame_orbit3d, frame_orbitmap):
+    fr.grid(row=0, column=0, sticky="nsew")
 
+
+def show_orbit_mode():
+    if orbit_mode.get() == "3d":
+        frame_orbit3d.lift()
+    else:
+        frame_orbitmap.lift()
+
+
+def toggle_orbit_mode():
+    orbit_mode.set("map" if orbit_mode.get() == "3d" else "3d")
+    show_orbit_mode()
+
+
+btn_toggle = Button(frame_orbita, text="Modo: 3D / Mapa",
+                    bg="#333333", fg=TEXT_FG, bd=0,
+                    command=toggle_orbit_mode)
+btn_toggle.grid(row=0, column=1, sticky="e", padx=40, pady=4)
+
+# --- ÓRBITA 3D ---
+def crear_orbita_3d():
     fig_local = Figure(figsize=(4, 4), dpi=100)
     ax_local = fig_local.add_subplot(111, projection='3d')
 
@@ -337,7 +360,6 @@ def abrir_sistema_orbital():
     ax_local.set_zlabel("Z (m)", color=TEXT_FG)
     ax_local.tick_params(colors=TEXT_FG)
 
-    # Dibujar la Tierra en el origen
     R_EARTH_3D = R_EARTH
     u = np.linspace(0, 2 * np.pi, 40)
     v = np.linspace(0, np.pi, 20)
@@ -347,19 +369,20 @@ def abrir_sistema_orbital():
     ax_local.plot_surface(x_sphere, y_sphere, z_sphere, color='#1e90ff',
                           edgecolor='none', alpha=0.9)
 
-    orbit_line, = ax_local.plot([], [], [], '-', linewidth=2,
-                                color='yellow', label='Órbita')
-    satellite_marker, = ax_local.plot([], [], [], 'o', markersize=6,
-                                      color='red', label='Satélite')
+    orbit_line, = ax_local.plot([], [], [], '-', linewidth=2, color='yellow', label='Órbita')
+    satellite_marker, = ax_local.plot([], [], [], 'o', markersize=6, color='red', label='Satélite')
     ax_local.legend(facecolor="#111111", edgecolor="#444444", labelcolor=TEXT_FG)
 
-    canvas_local = FigureCanvasTkAgg(fig_local, master=orbita_inner)
+    canvas_local = FigureCanvasTkAgg(fig_local, master=frame_orbit3d)
     canvas_local.draw()
     canvas_local.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
+    last_len = {"n": 0}
+
     def actualizar_local():
-        if x_orbit and y_orbit and z_orbit:
-            # Escala ligeramente agrandada respecto a los datos
+        if len(x_orbit) != last_len["n"] and x_orbit and y_orbit and z_orbit:
+            last_len["n"] = len(x_orbit)
+
             xo = np.array(x_orbit)
             yo = np.array(y_orbit)
             zo = np.array(z_orbit)
@@ -370,7 +393,6 @@ def abrir_sistema_orbital():
             satellite_marker.set_data(xo[-1:], yo[-1:])
             satellite_marker.set_3d_properties(zo[-1:])
 
-            # Ajustar límites al rango real de la órbita
             margin = 0.1
             x_min, x_max = xo.min(), xo.max()
             y_min, y_max = yo.min(), yo.max()
@@ -390,20 +412,114 @@ def abrir_sistema_orbital():
             ax_local.set_xlim(cx - max_range / 2, cx + max_range / 2)
             ax_local.set_ylim(cy - max_range / 2, cy + max_range / 2)
             ax_local.set_zlim(cz - max_range / 2, cz + max_range / 2)
-
-            # Mantener proporciones visuales razonables
             ax_local.set_box_aspect([1, 1, 1])
 
             canvas_local.draw()
 
-        window.after(500, actualizar_local)
+        window.after(800, actualizar_local)
 
     actualizar_local()
 
 
-abrir_sistema_orbital()
+# --- MAPA MUNDI + SATÉLITE, USANDO DATOS REALES, PERO FORZANDO SENO ---
+def crear_orbita_mapa():
+    fig_map = Figure(figsize=(4, 4), dpi=100)
+    ax_map = fig_map.add_subplot(111)
 
-# =================== 4) Controles ===================
+    fig_map.patch.set_facecolor(CARD_BG)
+    ax_map.set_facecolor("#000000")
+    ax_map.set_title("Ground track (real + forma sinusoidal)", color=TEXT_FG)
+    ax_map.tick_params(colors=TEXT_FG)
+    for spine in ax_map.spines.values():
+        spine.set_color(TEXT_FG)
+
+    try:
+        img = plt.imread(MAP_IMAGE_PATH)
+    except Exception as e:
+        registrar_evento("ERRORES", f"No se pudo cargar mapa: {e}")
+        img = np.zeros((480, 960, 3), dtype=np.uint8)
+
+    ax_map.imshow(img, extent=[-180, 180, -90, 90], origin='upper')
+
+    track_line, = ax_map.plot([], [], '-', color='yellow', linewidth=1.5, label="Trayectoria")
+    sat_point, = ax_map.plot([], [], 'ro', markersize=6, label="Satélite")
+
+    ax_map.set_xlim(-180, 180)
+    ax_map.set_ylim(-90, 90)
+    ax_map.legend(facecolor="#111111", edgecolor="#444444", labelcolor=TEXT_FG)
+
+    canvas_map = FigureCanvasTkAgg(fig_map, master=frame_orbitmap)
+    canvas_map.draw()
+    canvas_map.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+    def xyz_to_latlon_simple(x, y, z):
+        r = math.sqrt(x * x + y * y + z * z)
+        if r == 0:
+            return 0.0, 0.0
+        lat = math.degrees(math.asin(z / r))
+        lon = math.degrees(math.atan2(y, x))
+        lon = (lon + 180.0) % 360.0 - 180.0
+        return lat, lon
+
+    k = 2.0 * math.pi / 180.0
+    phase = 0.0
+    last_len = {"n": 0}
+
+    def actualizar_mapa():
+        if len(x_orbit) != last_len["n"] and x_orbit and y_orbit and z_orbit:
+            last_len["n"] = len(x_orbit)
+
+            lats_real = []
+            lons_real = []
+            for X, Y, Z in zip(x_orbit, y_orbit, z_orbit):
+                lat_r, lon_r = xyz_to_latlon_simple(X, Y, Z)
+                lats_real.append(lat_r)
+                lons_real.append(lon_r)
+
+            if lats_real:
+                N = min(500, len(lats_real))
+                lat_slice = lats_real[-N:]
+                amp = max(60.0, min(89.0, max(abs(v) for v in lat_slice)))
+            else:
+                amp = 75.0
+
+            # Forzar latitud sinusoidal
+            lats_forzadas = [amp * math.sin(k * lon_r + phase)
+                             for lon_r in lons_real]
+
+            # --- NUEVO: romper la línea cuando hay salto grande de longitud ---
+            lons_plot = [lons_real[0]]
+            lats_plot = [lats_forzadas[0]]
+            for idx in range(1, len(lons_real)):
+                lon_prev = lons_real[idx - 1]
+                lon_cur = lons_real[idx]
+                lat_cur = lats_forzadas[idx]
+                if abs(lon_cur - lon_prev) > 180:  # salto tipo 170 -> -170
+                    lons_plot.append(float('nan'))
+                    lats_plot.append(float('nan'))
+                lons_plot.append(lon_cur)
+                lats_plot.append(lat_cur)
+            # Matplotlib no dibuja líneas a través de puntos NaN. [web:432][web:441]
+
+            track_line.set_data(lons_plot, lats_plot)
+
+            lon_last = lons_real[-1]
+            lat_last = lats_forzadas[-1]
+            sat_point.set_data([lon_last], [lat_last])
+
+            canvas_map.draw()
+
+        window.after(800, actualizar_mapa)
+
+    actualizar_mapa()
+
+
+crear_orbita_3d()
+crear_orbita_mapa()
+show_orbit_mode()
+
+# =================== 4) Controles (igual que antes) ===================
+
 add_fullscreen_header(frame_controles, "Controles y parámetros")
 
 cont_inner = Frame(frame_controles, bg="black")
@@ -420,7 +536,7 @@ BTN_FG = "#eceff4"
 LABEL_FONT = ("Segoe UI", 11)
 ENTRY_FONT = ("Segoe UI", 11)
 
-Label(cont_inner, text="Ground Station v2.5",
+Label(cont_inner, text="Ground Station v2.7",
       bg="black", fg=TEXT_FG, font=("Segoe UI", 14, "bold")).grid(
     row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
 )
@@ -840,7 +956,7 @@ def leer_serial():
             elif len(trozos) >= 3 and trozos[0] == '2':
                 try:
                     ang = float(trozos[1])
-                    dist = float(trozos[2])  # se espera en cm
+                    dist = float(trozos[2])
                     last_angle_received = ang
 
                     if 0 <= ang <= 180:
@@ -852,13 +968,6 @@ def leer_serial():
                 except Exception as e:
                     registrar_evento("ERRORES", f"Radar inválido: {raw} ({e})")
 
-                # Extraer órbita si viene en el mismo mensaje
-                match = regex_orbit.search(raw)
-                if match:
-                    x_orbit.append(float(match.group(1)))
-                    y_orbit.append(float(match.group(2)))
-                    z_orbit.append(float(match.group(3)))
-
             elif trozos[0] == '3':
                 registrar_evento("ERRORES", "Satélite: fallo DHT")
             elif trozos[0] == '5':
@@ -867,6 +976,20 @@ def leer_serial():
                 registrar_evento("ERRORES", "Satélite: fallo sensor distancia")
             else:
                 registrar_evento("INFO SATELITE", "Otro mensaje: " + raw)
+
+            match = regex_orbit.search(raw)
+            if match:
+                try:
+                    x_orbit.append(float(match.group(1)))
+                    y_orbit.append(float(match.group(2)))
+                    z_orbit.append(float(match.group(3)))
+
+                    if len(x_orbit) > MAX_ORBIT_POINTS:
+                        x_orbit[:] = x_orbit[-MAX_ORBIT_POINTS:]
+                        y_orbit[:] = y_orbit[-MAX_ORBIT_POINTS:]
+                        z_orbit[:] = z_orbit[-MAX_ORBIT_POINTS:]
+                except ValueError:
+                    registrar_evento("ERRORES", f"Órbita inválida: {raw}")
 
     except serial.SerialException as e:
         print("Error puerto serie:", e)
@@ -877,7 +1000,7 @@ def ciclo_lectura():
     if lectura_activa:
         leer_serial()
         actualizar_graficas()
-        window.after(100, ciclo_lectura)
+        window.after(120, ciclo_lectura)
 
 
 def on_close():
