@@ -286,11 +286,30 @@ void loop() {
         String s = "2:" + String(angulo) + ":" + String(d, 2);
         sendMsg(s);
         Serial.print("DBG RADAR_OK "); Serial.println(s);
+
+        // 👉 AQUÍ AÑADIMOS LA LÓGICA DE AMENAZA
+        if (d > 0 && d < 50.0) {
+          if (!amenazaActiva) {
+            amenazaActiva = true;
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("AMENAZA");
+          }
+        } else if (d >= 50.0) {
+          if (amenazaActiva) {
+            amenazaActiva = false;
+            lcd.clear();             // borra el mensaje
+            // Si quieres mostrar algo por defecto:
+            lcd.setCursor(0, 0);
+            lcd.print("AREA SEGURA");
+          }
+        }
       }
     }
   } else {
     servoMotor.write(angulo);
   }
+
 
   // 4️⃣ ÓRBITA
   if (millis() >= nextOrbit) {
