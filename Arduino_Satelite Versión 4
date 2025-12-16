@@ -54,7 +54,7 @@ const double TIME_COMPRESSION = 90.0;
 double r, real_orbital_period;
 
 // =====================================================
-// CHECKSUM y funciones (igual que antes)
+// CHECKSUM
 unsigned int checksum(String msg) {
   unsigned int sum = 0;
   for (unsigned int i = 0; i < msg.length(); i++) sum += msg[i];
@@ -116,7 +116,6 @@ void enviarOrbita(unsigned long ms) {
   sendMsg(msg);
 }
 
-// procesarComando() igual que antes...
 void procesarComando(String cmd) {
   cmd.trim();
   if (cmd.length() == 0) return;
@@ -161,7 +160,6 @@ void procesarComando(String cmd) {
       break;
     }
     case 7: {
-      // intervaloUltra = constrain(val.toInt(), 100, 10000);
       sendMsg("5:ULTRA_MS=" + val);
       break;
     }
@@ -211,9 +209,10 @@ void loop() {
     return;
   }
 
-  // DHT
+  // DHT ✅ CON DELAY
   if (millis() >= nextHT) {
     nextHT = millis() + intervaloHT;
+    delay(500);  // ← DHT estabilización
     float t = dht.readTemperature();
     float h = dht.readHumidity();
     if (!isnan(t) && !isnan(h)) pushTemp(t);
@@ -222,7 +221,7 @@ void loop() {
     sendMsg(msg);
   }
 
-  // SERVO + RADAR + AMENAZA → ENVÍA A TIERRA
+  // SERVO + RADAR + AMENAZA ✅ YA FUNCIONA
   if (modoBarrido) {
     if (millis() >= nextServo) {
       nextServo = millis() + intervaloServo;
@@ -237,13 +236,13 @@ void loop() {
         String s = "2:" + String(angulo) + ":" + String(d, 2);
         sendMsg(s);
 
-        // 👉 LÓGICA AMENAZA: envía mensaje solo al cambiar estado
-        if (d > 0 && d < 50.0) {
+        // LÓGICA AMENAZA ✅
+        if (d > 0 && d <= 50.0) {  // ≤ 50cm
           if (!amenazaActiva) {
             amenazaActiva = true;
             sendMsg("5:AMENAZA_ON");
           }
-        } else if (d >= 50.0) {
+        } else if (d > 50.0) {
           if (amenazaActiva) {
             amenazaActiva = false;
             sendMsg("5:AMENAZA_OFF");
