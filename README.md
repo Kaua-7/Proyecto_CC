@@ -1,48 +1,138 @@
-(header)
+# 🚀 Proyecto Grupo 9
 
-# Proyecto grupo 9
-Repositorio con los códigos del grupo 9 formado por: Jan Fernández, Kaua Vieira e Ingrid Rojano.
+Repositorio con los códigos y recursos del **Proyecto del Grupo 9**, formado por **Jan Fernández**, **Kaua Vieira** e **Ingrid Rojano**. El proyecto simula y monitoriza un satélite con sensores, comunicación inalámbrica, estación de tierra e interfaz gráfica con visualización avanzada.
 
-Última versión publicada: versión 3 del proyecto.
+---
 
-## Funciones disponibles en la versión 4:
+## 📌 Estado del proyecto
 
+* **Última versión publicada:** v3
+* **Funciones descritas a continuación:** v4 (en desarrollo / próxima publicación)
 
-## Arduino satélite:
-**1.** El satélite recoge y envía los valores de temperatura y humedad desde el sensor DHT y los valores de distancia medidos por el sensor de ultrasonidos, que se encuentra en movimiento por el servomotor. 
+---
 
-**2.** Incluye un mecanismo de checksum que permite descartar los mensajes que han sufrido alteraciones durante la transmisión.
+##  Índice
 
-**3.** Existe comunicación inalámbrica entre el satélite y la estación de tierra.
+1. [Arquitectura general](#-arquitectura-general)
+2. [Funciones – Versión 4](#-funciones--versión-4)
 
+   * [Arduino satélite](#arduino-satélite)
+   * [Estación de tierra](#estación-de-tierra)
+   * [Interfaz gráfica](#interfaz-gráfica)
+3. [Registro y trazabilidad](#-registro-y-trazabilidad)
+4. [Simulación orbital](#-simulación-orbital)
+5. [Vídeos del proyecto](#-vídeos-del-proyecto)
 
-## Estación de tierra:
-**1.** Incluye LED's de diferentes colores, verde y rojo, el primero se ilumina reiteradamente cada vez que la estación reciba datos en caso de fallos de comunicación el LED que se iluminará será el rojo y verde dejará de hacerlo.
+---
 
+##  Arquitectura general
 
+El sistema está dividido en **tres bloques principales**:
 
-## Interfaz gráfica:
-**1.** Los datos registrados se reciben en la estación de tierra y estos se presentan en una interfaz gráfica.
+* **Satélite (Arduino):** Captura datos ambientales y de distancia, los procesa y los envía inalámbricamente.
+* **Estación de tierra:** Recibe los datos, valida la comunicación y actúa como puente hacia la interfaz gráfica.
+* **Interfaz gráfica (Python):** Visualiza los datos, permite la interacción del usuario y gestiona alarmas y registros.
 
-**2.** Tres gráficas representan la evolución de la temperatura, su media y la humedad.
+---
 
-**3.** En la interfaz el usuario puede controlar: el intervalo de envío de datos, de cuantos valores hacer la media de temperatura si esta se calcula en el Arduino o en Python. Seleccionar además un valor máximo de temperatura, y en caso de que las últimas tres medias lo superen hacer sonar una alarma.
+##  Funciones – Versión 4
 
-**4.** En lo referente al servo, el usuario puede pedir un barrido continuo o un ángulo determinado.
+###  Arduino satélite
 
-**5.** Se incluye también un fichero que registra todos los datos, errores, cambios realizados y observaciones del usuario. Junto con la fecha y hora que estos se realizan. 
+1.  **Adquisición de datos**
 
-**6.**  Una simulación del período orbital del satélite en 3D.
+   * Temperatura y humedad mediante sensor **DHT**.
+   * Medición de distancia con **sensor de ultrasonidos**, montado sobre un **servomotor** en movimiento.
 
-**7.** 
+2.  **Integridad de datos**
 
-## Vídeos de las versiones:
--Versión 1
+   * Implementación de un **checksum**, que permite detectar y descartar mensajes corruptos durante la transmisión.
 
--Versión 2
+3.  **Comunicación inalámbrica**
 
--Versión 3
+   * Enlace estable entre el satélite y la estación de tierra.
 
--Versión 4
+---
+
+###  Estación de tierra
+
+1.  **Indicadores LED**
+
+   * **LED verde:** Parpadea cada vez que se reciben datos correctamente.
+   * **LED rojo:** Se activa en caso de fallo de comunicación, deshabilitando el LED verde.
+   * **LED blanco:** Se activa en caso de fallo en el DHT.
+   * **LED verde:** Se activa en caso de fallo en el sensor de ultrasonido.
+
+2.  **Gestión de recepción**
+
+   * Validación de mensajes recibidos antes de enviarlos a la interfaz gráfica.
+
+3.  **Alarma de distancia**
+
+   * LCD1602 en el cual aparece el mensaje de amenaza cuando el sensor de ultrasonidos detecta un objeto a menos de 50 cm.
+     
+
+---
+
+###  Interfaz gráfica
+
+1.  **Visualización de datos**
+
+   * Recepción de datos desde la estación de tierra.
+   * Representación gráfica en tiempo real.
+
+2.  **Gráficas incluidas**
+
+   * Evolución de la **temperatura**.
+   * **Media de temperatura**.
+   * Evolución de la **humedad**.
+
+3.  **Control por parte del usuario**
+   El usuario puede configurar:
+
+   * Intervalo de envío de datos.
+   * Número de valores usados para la media de temperatura.
+   * Cálculo de la media en **Arduino** o en **Python**.
+   * Umbral máximo de temperatura.
+
+     **Sistema de alarma:**
+
+   * Si las **tres últimas medias** superan el valor máximo configurado, se activa una alarma en pantalla.
+
+4.  **Control del servomotor**
+
+   * Barrido continuo.
+   * Posicionamiento en un ángulo específico definido por el usuario.
+
+---
+
+##  Registro y trazabilidad
+
+El sistema incluye un **fichero de registro (log)** que almacena:
+
+* Datos recibidos.
+* Errores de comunicación.
+* Cambios realizados por el usuario.
+* Observaciones manuales.
+
+Cada evento queda registrado junto con su **fecha y hora**, garantizando trazabilidad completa del sistema.
+
+---
+
+##  Simulación orbital
+
+* Simulación **3D** del período orbital del satélite alrededor de la Tierra.
+* Visualización del satélite desplazándose sobre un mapa mundi en 2D, siguiendo un movimiento sinusoidal que simula su paso orbital sobre la superficie terrestre.
+
+---
+
+##  Vídeos del proyecto
+
+* ▶️ **Versión 1**
+* ▶️ **Versión 2**
+* ▶️ **Versión 3**
+* ▶️ **Versión 4**
+
+---
 
 
