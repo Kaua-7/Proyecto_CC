@@ -59,8 +59,6 @@ El sistema está dividido en **tres bloques principales**:
 
    * **LED verde:** Parpadea cada vez que se reciben datos correctamente.
    * **LED rojo:** Se activa en caso de fallo de comunicación, deshabilitando el LED verde.
-   * **LED blanco:** Se activa en caso de fallo en el DHT.
-   * **LED verde:** Se activa en caso de fallo en el sensor de ultrasonido.
 
 2.  **Gestión de recepción**
 
