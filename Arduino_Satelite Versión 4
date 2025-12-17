@@ -1,288 +1,1170 @@
-// =====================================================
-// 🛰️ SATÉLITE v4.8 - DHT + Ultrasonidos + Servo + Órbita + AMENAZA → TIERRA
-// =====================================================
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.collections
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d import Axes3D  # noqa
 
-#include <SoftwareSerial.h>
-#include <DHT.h>
-#include <Servo.h>
+from tkinter import *
+from tkinter import messagebox, Toplevel
+import math
+import numpy as np
+import serial
+import time
+import re
+import datetime
+import os
 
-// ------------------ PINES ------------------
-#define DHTPIN 2
-#define DHTTYPE DHT11
-#define TRIGPIN 6
-#define ECHOPIN 7
-#define SERVOPIN 9
-#define MOTORPIN 12
-#define LEDRX 13
+# =================== CONFIG ===================
+device = 'COM5'  # Cambia al puerto correcto
+MAP_IMAGE_PATH = r"C:\Users\kauav\Desktop\Versión 4\world.200412.3x5400x2700.jpg"
 
-// ------------------ OBJETOS ------------------
-SoftwareSerial mySerial(10, 11); // RX, TX hacia estación (puente)
-DHT dht(DHTPIN, DHTTYPE);
-Servo servoMotor;
+FIGSIZE_ORBIT_NORMAL = (6, 3.2)
+FIGSIZE_ORBIT_FULL   = (11, 6)
 
-// ------------------ ESTADO GLOBAL ------------------
-bool transmitiendo      = false;
-bool modoBarrido        = false;
-bool arduinoComputeAvg  = false;
-bool amenazaActiva      = false;  // Estado para enviar solo cambios
+DARK_BG   = "#050816"
+CARD_BG   = "#0b1020"
+CARD_ALT  = "#0f172a"
+TEXT_FG   = "#e5f2ff"
+ACCENT    = "#38bdf8"
+ACCENT_2  = "#a855f7"
+DANGER    = "#f97373"
+OK_COLOR  = "#22c55e"
 
-// ------------------ TIEMPOS ------------------
-unsigned long intervaloHT    = 5000;
-unsigned long nextHT         = 0;
-unsigned long intervaloServo = 300;
-unsigned long nextServo      = 0;
-unsigned long intervaloUltra = 300;   // intervalo ultrasonidos (ms)
-unsigned long nextUltra      = 0;
-unsigned long intervaloOrbit = 3000;
-unsigned long nextOrbit      = 0;
+LABEL_FONT = ("Segoe UI", 8)
+ENTRY_FONT = ("Segoe UI", 8)
+BTN_FONT   = ("Segoe UI", 8, "bold")
+BTN_PADY   = 3
+BTN_WIDTH  = 12
 
-// ------------------ SERVO ------------------
-int angulo     = 90;
-int direccion  = 1;
-const int PASO = 15;
+MAX_LOG_LINES = 400
 
-// ------------------ MEDIA TEMPERATURA ------------------
-#define MAX_WINDOW 100
-float tempBuffer[MAX_WINDOW];
-int   tempCount = 0;
-int   windowN   = 10;
+# =================== SERIE ===================
+class DummySerial:
+    def write(self, data):
+        print("SERIAL SIM:", data.decode(errors="ignore").strip())
 
-// ------------------ ÓRBITA ------------------
-const double G                = 6.67430e-11;
-const double M                = 5.97219e24;
-const double R_EARTH          = 6371000;
-const double ALTITUDE         = 400000;
-const double TIME_COMPRESSION = 90.0;
-double r, real_orbital_period;
+    @property
+    def in_waiting(self):
+        return 0
 
-// =====================================================
-// CHECKSUM
-unsigned int checksum(String msg) {
-  unsigned int sum = 0;
-  for (unsigned int i = 0; i < msg.length(); i++) sum += msg[i];
-  return sum % 256;
-}
+    def readline(self):
+        return b""
 
-void sendMsg(String msg) {
-  mySerial.print("CHK:");
-  mySerial.print(msg);
-  mySerial.print(":");
-  mySerial.println(checksum(msg));
-}
+    def close(self):
+        pass
 
-String limpiarChecksum(String raw) {
-  raw.trim();
-  if (!raw.startsWith("CHK:")) return raw;
-  raw = raw.substring(4);
-  int lastColon = raw.lastIndexOf(':');
-  if (lastColon > 0) raw = raw.substring(0, lastColon);
-  return raw;
-}
+try:
+    mySerial = serial.Serial(device, 9600, timeout=1)
+    print(f"Puerto serie {device} abierto correctamente")
+except serial.SerialException as e:
+    print(f"No se pudo abrir el puerto {device}: {e}")
+    print("Usando puerto serie simulado (DummySerial).")
+    mySerial = DummySerial()
 
-float medirDistancia() {
-  digitalWrite(TRIGPIN, LOW); delayMicroseconds(2);
-  digitalWrite(TRIGPIN, HIGH); delayMicroseconds(10);
-  digitalWrite(TRIGPIN, LOW);
-  long duracion = pulseIn(ECHOPIN, HIGH, 25000);
-  if (duracion == 0) return -1;             // fallo / desconectado
-  return duracion * 0.034 / 2.0;
-}
+# =================== VARIABLES GLOBALES ===================
+temperaturas = []
+humedades = []
+eje_x = []
+media_movil = []
 
-void pushTemp(float t) {
-  if (tempCount < MAX_WINDOW) tempBuffer[tempCount++] = t;
-  else {
-    for (int i = 0; i < MAX_WINDOW - 1; i++)
-      tempBuffer[i] = tempBuffer[i + 1];
-    tempBuffer[MAX_WINDOW - 1] = t;
-  }
-}
+alerta_activa = False
+alerta_media_activa = False
+limite_temp = 30.0
+ventana_default = 10
+i = 0
+lectura_activa = False
 
-float computeAvg() {
-  int n = min(tempCount, windowN);
-  if (n == 0) return NAN;
-  float s = 0;
-  for (int i = tempCount - n; i < tempCount; i++) s += tempBuffer[i];
-  return s / n;
-}
+radar_echoes = []
+RADAR_MAX_POINTS = 50
+RADAR_MAX_AGE = 10
+last_angle_received = None
 
-void enviarOrbita(unsigned long ms) {
-  double time  = (ms / 1000.0) * TIME_COMPRESSION;
-  double angle = 2 * PI * (time / real_orbital_period);
-  double x = r * cos(angle);
-  double y = r * sin(angle);
-  double z = 0;
-  String msg = "Orbit | Time: " + String(time, 2) +
-               " s | X: "  + String(x, 2) +
-               " m, Y: "   + String(y, 2) +
-               " m, Z: "   + String(z, 2);
-  sendMsg(msg);
-}
+modo_media = "python"
+last_dht_accepted_ms = 0
 
-void procesarComando(String cmd) {
-  cmd.trim();
-  if (cmd.length() == 0) return;
+# Órbita
+x_orbit = []
+y_orbit = []
+z_orbit = []
+R_EARTH = 3.5e6
+MAX_ORBIT_POINTS = 2000
 
-  if (cmd == "Iniciar") {
-    transmitiendo = true;
-    modoBarrido  = true;
-    unsigned long now = millis();
-    nextHT    = now;
-    nextServo = now;
-    nextUltra = now;
-    nextOrbit = now;
-    sendMsg("5:INICIADO");
-    return;
-  }
-  if (cmd == "Parar") {
-    transmitiendo = false;
-    sendMsg("5:PARADO");
-    return;
-  }
+regex_orbit = re.compile(
+    r"Orbit \| Time: [\d\.]+ s \| X: ([\d\.-]+) m, Y: ([\d\.-]+) m, Z: ([\d\.-]+)"
+)
 
-  int sep  = cmd.indexOf(':');
-  int code = (sep < 0) ? cmd.toInt() : cmd.substring(0, sep).toInt();
-  String val = (sep < 0) ? "" : cmd.substring(sep + 1);
+# Log
+LOG_FILE = "eventos.log"
+log_lines = []  # (timestamp, tipo, texto)
+log_filter_tipo = "TODOS"
 
-  switch (code) {
-    case 1: {
-      int s = val.toInt();
-      if (s >= 1 && s <= 3600) {
-        intervaloHT = s * 1000UL;
-        nextHT = millis() + intervaloHT;
-        sendMsg("5:PERIODO_DHT=" + String(s));
-      }
-      break;
-    }
-    case 2: {
-      angulo = constrain(val.toInt(), 0, 180);
-      modoBarrido = false;          // servo pasa a modo manual, pero el ultra sigue
-      servoMotor.write(angulo);
-      sendMsg("5:SERVO_MANUAL=" + String(angulo));
-      break;
-    }
-    case 6: {
-      modoBarrido = (val == "1");
-      sendMsg(modoBarrido ? "5:BARRIDO_ON" : "5:BARRIDO_OFF");
-      break;
-    }
-    case 7: {
-      // Intervalo ultrasonidos
-      unsigned long ms = val.toInt();
-      if (ms < 50) ms = 50;
-      intervaloUltra = ms;
-      nextUltra = millis() + intervaloUltra;
-      sendMsg("5:ULTRA_MS=" + String(ms));
-      break;
-    }
-    case 8: {
-      arduinoComputeAvg = (val == "1");
-      sendMsg(arduinoComputeAvg ? "5:AVG_ON" : "5:AVG_OFF");
-      break;
-    }
-    case 9: {
-      windowN = constrain(val.toInt(), 1, MAX_WINDOW);
-      sendMsg("5:WINDOW=" + String(windowN));
-      break;
-    }
-    default:
-      sendMsg("5:CMD_DESCONOCIDO");
-  }
-}
+def registrar_evento(tipo, descripcion):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    linea = f"{timestamp} | {tipo} | {descripcion}"
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(linea + "\n")
+    except Exception as e:
+        print("Error escribiendo log:", e)
+    print("EVENTO:", linea)
+    log_lines.append((timestamp, tipo, descripcion))
+    if len(log_lines) > MAX_LOG_LINES:
+        del log_lines[0]
 
-void setup() {
-  pinMode(TRIGPIN, OUTPUT);
-  pinMode(ECHOPIN, INPUT);
-  pinMode(MOTORPIN, OUTPUT);
-  pinMode(LEDRX, OUTPUT);
+def filtrar_logs_por_tipo():
+    if log_filter_tipo == "TODOS":
+        return log_lines
+    return [l for l in log_lines if l[1] == log_filter_tipo]
 
-  servoMotor.attach(SERVOPIN);
-  servoMotor.write(angulo);
+def set_axes_equal(ax):
+    limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
+    spans = limits[:, 1] - limits[:, 0]
+    centers = np.mean(limits, axis=1)
+    radius = 0.5 * max(spans)
+    ax.set_xlim3d([centers[0] - radius, centers[0] + radius])
+    ax.set_ylim3d([centers[1] - radius, centers[1] + radius])
+    ax.set_zlim3d([centers[2] - radius, centers[2] + radius])
+    ax.set_box_aspect([1, 1, 1])
 
-  dht.begin();
-  Serial.begin(9600);
-  mySerial.begin(9600);
+# =================== VENTANA PRINCIPAL ===================
+window = Tk()
+window.title("Ground Station - Radar + Gráficas + Órbita")
+window.state("zoomed")
+window.configure(bg=DARK_BG)
 
-  r = R_EARTH + ALTITUDE;
-  real_orbital_period = 2 * PI * sqrt(pow(r, 3) / (G * M));
+window.grid_rowconfigure(0, weight=3)
+window.grid_rowconfigure(1, weight=2)
+window.grid_columnconfigure(0, weight=1)
+window.grid_columnconfigure(1, weight=1)
 
-  sendMsg("5:SATELITE_LISTO");
-}
+frame_mapa  = Frame(window, bg=CARD_BG, bd=2, relief="ridge",
+                    highlightbackground=ACCENT, highlightcolor=ACCENT, highlightthickness=1)
+frame_radar = Frame(window, bg=CARD_BG, bd=2, relief="ridge",
+                    highlightbackground=ACCENT_2, highlightcolor=ACCENT_2, highlightthickness=1)
+frame_graf  = Frame(window, bg=CARD_BG, bd=2, relief="ridge",
+                    highlightbackground="#64748b", highlightcolor="#64748b", highlightthickness=1)
 
-void loop() {
-  while (mySerial.available()) {
-    String raw    = mySerial.readStringUntil('\n');
-    String limpio = limpiarChecksum(raw);
-    procesarComando(limpio);
-  }
+frame_mapa.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+frame_radar.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0,10))
+frame_graf.grid(row=1, column=1, sticky="nsew", padx=(0,10), pady=(0,10))
 
-  if (!transmitiendo) {
-    // Si no transmite, solo mantiene el servo en su ángulo actual
-    servoMotor.write(angulo);
-    return;
-  }
+for f in (frame_mapa, frame_radar, frame_graf):
+    f.grid_rowconfigure(0, weight=0)
+    f.grid_rowconfigure(1, weight=1)
+    f.grid_columnconfigure(0, weight=1)
 
-  unsigned long ahora = millis();
+def add_header(frame, title_text):
+    header = Frame(frame, bg=CARD_BG, bd=0, highlightthickness=0)
+    header.grid(row=0, column=0, sticky="ew")
+    header.grid_columnconfigure(0, weight=1)
+    lbl = Label(header, text=title_text, bg=CARD_BG, fg=ACCENT,
+                font=("Segoe UI", 10, "bold"))
+    lbl.grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    return header
 
-  // DHT con detección de fallo (desenchufado -> NaN)
-  if (ahora >= nextHT) {
-    nextHT = ahora + intervaloHT;
-    delay(500);  // estabilización DHT
-    float t = dht.readTemperature();
-    float h = dht.readHumidity();
+# ---------- MAPA / LOG / OBSERVACIONES ----------
+map_header = add_header(frame_mapa, "Módulo Órbita / Registro / Observaciones")
 
-    if (isnan(t) || isnan(h)) {
-      // Lectura inválida: DHT desconectado o fallo → alarma "3:"
-      sendMsg("3:");
-    } else {
-      // Lectura correcta
-      pushTemp(t);
-      String msg = "1:" + String(t, 2) + ":" + String(h, 2);
-      if (arduinoComputeAvg) msg += ":A:" + String(computeAvg(), 2);
-      sendMsg(msg);
-    }
-  }
+# Panel de controles superior derecho (columna)
+controls_top = Frame(map_header, bg=CARD_BG)
+controls_top.grid(row=0, column=1, rowspan=2, sticky="ne", padx=8, pady=3)
+for r in range(7):
+    controls_top.grid_rowconfigure(r, weight=0)
+controls_top.grid_columnconfigure(0, weight=1)
 
-  // SERVO (solo barrido) + ULTRASONIDOS (siempre)
-  if (modoBarrido && (ahora >= nextServo)) {
-    nextServo = ahora + intervaloServo;
-    angulo += PASO * direccion;
-    if (angulo >= 180 || angulo <= 0) direccion *= -1;
-    servoMotor.write(angulo);
-  } else {
-    // En modo manual ya se fijó angulo desde el comando case 2
-    servoMotor.write(angulo);
-  }
+def abrir_manual():
+    texto = (
+        "MANUAL DE USO\n\n"
+        "- Iniciar: el satélite comienza a transmitir datos DHT, radar y órbita.\n"
+        "- Parar: detiene la transmisión, pero puedes seguir moviendo el servo.\n"
+        "- Barrido servo: activa/desactiva el barrido automático del servo en el satélite.\n"
+        "- Registro observación: escribe notas manuales en el log.\n"
+        "- Filtro: muestra solo ALERTA, OBSERVACION, INFO, COMANDOS o ERRORES.\n"
+    )
+    top = Toplevel(window)
+    top.title("Manual de la Ground Station")
+    top.configure(bg=CARD_BG)
+    top.geometry("600x500")
+    top.grid_rowconfigure(0, weight=1)
+    top.grid_columnconfigure(0, weight=1)
 
-  // ULTRASONIDOS independientemente del barrido
-  if (ahora >= nextUltra) {
-    nextUltra = ahora + intervaloUltra;
+    txt = Text(top, bg="#020617", fg=TEXT_FG, wrap="word",
+               font=("Segoe UI", 9))
+    txt.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+    txt.insert("1.0", texto)
+    txt.config(state="disabled")
 
-    float d = medirDistancia();
-    if (d < 0) {
-      // Desenchufado / sin eco → alarma "6:"
-      sendMsg("6:");
-    } else {
-      String s = "2:" + String(angulo) + ":" + String(d, 2);
-      sendMsg(s);
+    btn_cerrar = Button(top, text="Cerrar", command=top.destroy,
+                        bg=ACCENT, fg="#020617", relief="flat",
+                        font=BTN_FONT, width=10)
+    btn_cerrar.grid(row=1, column=0, pady=6)
 
-      // LÓGICA AMENAZA (solo ON/OFF, no es fallo de sensor)
-      if (d > 0 && d <= 50.0) {  // ≤ 50cm
-        if (!amenazaActiva) {
-          amenazaActiva = true;
-          sendMsg("5:AMENAZA_ON");
-        }
-      } else if (d > 50.0) {
-        if (amenazaActiva) {
-          amenazaActiva = false;
-          sendMsg("5:AMENAZA_OFF");
-        }
-      }
-    }
-  }
+btn_manual = Button(controls_top, text="Manual", command=abrir_manual,
+                    bg=ACCENT_2, fg="#020617", relief="flat",
+                    font=BTN_FONT, width=BTN_WIDTH)
+btn_manual.grid(row=0, column=0, sticky="ew", pady=2)
 
-  // ÓRBITA
-  if (ahora >= nextOrbit) {
-    nextOrbit = ahora + intervaloOrbit;
-    enviarOrbita(ahora);
-  }
-}
+def abrir_simulacion_orbital():
+    sim = Toplevel(window)
+    sim.title("Simulación Orbital (Datos reales)")
+    sim.configure(bg="SystemButtonFace")
+    sim.state("zoomed")
+
+    sim.grid_rowconfigure(0, weight=0)
+    sim.grid_rowconfigure(1, weight=1)
+    sim.grid_rowconfigure(2, weight=1)
+    sim.grid_columnconfigure(0, weight=1)
+
+    header = Frame(sim)
+    header.grid(row=0, column=0, sticky="ew")
+    header.grid_columnconfigure(0, weight=1)
+    Label(header, text="Simulación orbital 3D / Ground‑track (datos del satélite)",
+          font=("Segoe UI", 10, "bold")).grid(
+        row=0, column=0, sticky="w", padx=8, pady=3
+    )
+
+    orbit_mode = StringVar(value="3d")
+
+    def cerrar_sim():
+        sim.destroy()
+
+    def toggle_orbit_mode():
+        orbit_mode.set("map" if orbit_mode.get() == "3d" else "3d")
+        show_orbit_mode()
+
+    btn_toggle = Button(header, text="Vista 3D / Mapa",
+                        command=toggle_orbit_mode,
+                        font=("Segoe UI", 8))
+    btn_toggle.grid(row=0, column=1, sticky="e", padx=4)
+
+    btn_exit = Button(header, text="Salir",
+                      command=cerrar_sim,
+                      font=("Segoe UI", 8))
+    btn_exit.grid(row=0, column=2, sticky="e", padx=4)
+
+    main_frame = Frame(sim)
+    main_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
+    main_frame.grid_rowconfigure(0, weight=1)
+    main_frame.grid_columnconfigure(0, weight=1)
+
+    container = Frame(main_frame)
+    container.grid(row=0, column=0, sticky="nsew")
+    container.grid_rowconfigure(0, weight=1)
+    container.grid_columnconfigure(0, weight=1)
+
+    frame_orbit3d = Frame(container)
+    frame_orbitmap = Frame(container)
+
+    log_frame_sim = Frame(sim, bg="#e5e7eb")
+    log_frame_sim.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))
+    log_frame_sim.grid_rowconfigure(1, weight=1)
+    log_frame_sim.grid_columnconfigure(0, weight=1)
+    Label(log_frame_sim, text="Registro de eventos (simulación)",
+          bg="#e5e7eb", font=("Segoe UI", 9, "bold")).grid(
+        row=0, column=0, sticky="w", padx=4, pady=(2, 0)
+    )
+    txt_log_sim = Text(log_frame_sim, height=6, bg="white", fg="black",
+                       font=("Segoe UI", 8))
+    txt_log_sim.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+
+    def refrescar_log_sim():
+        txt_log_sim.config(state="normal")
+        txt_log_sim.delete("1.0", END)
+        for ts, tipo, desc in filtrar_logs_por_tipo()[-MAX_LOG_LINES:]:
+            txt_log_sim.insert(END, f"{ts} | {tipo} | {desc}\n")
+        txt_log_sim.config(state="disabled")
+        sim.after(1000, refrescar_log_sim)
+
+    refrescar_log_sim()
+
+    def crear_orbita_3d():
+        for w in frame_orbit3d.winfo_children():
+            w.destroy()
+
+        fig_local = Figure(figsize=FIGSIZE_ORBIT_FULL, dpi=100)
+        ax_local = fig_local.add_subplot(111, projection='3d')
+
+        ax_local.set_title("Órbita Satélite 3D")
+        ax_local.set_xlabel("X (m)")
+        ax_local.set_ylabel("Y (m)")
+        ax_local.set_zlabel("Z (m)")
+
+        R_EARTH_3D = R_EARTH
+        u = np.linspace(0, 2 * np.pi, 80)
+        v = np.linspace(0, np.pi, 40)
+        x_sphere = R_EARTH_3D * np.outer(np.cos(u), np.sin(v))
+        y_sphere = R_EARTH_3D * np.outer(np.sin(u), np.sin(v))
+        z_sphere = R_EARTH_3D * np.outer(np.ones_like(u), np.cos(v))
+        ax_local.plot_surface(x_sphere, y_sphere, z_sphere,
+                              cmap="Blues", edgecolor='none', alpha=0.9)
+
+        orbit_line, = ax_local.plot([], [], [], '-', linewidth=2, color="red", label='Órbita')
+        satellite_marker, = ax_local.plot([], [], [], 'o', markersize=5, color="green", label='Satélite')
+        ax_local.legend(fontsize=8)
+
+        set_axes_equal(ax_local)
+
+        frame_orbit3d.grid_rowconfigure(0, weight=1)
+        frame_orbit3d.grid_columnconfigure(0, weight=1)
+
+        canvas_local = FigureCanvasTkAgg(fig_local, master=frame_orbit3d)
+        canvas_local.draw()
+        canvas_local.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        last_len = {"n": 0}
+
+        def actualizar_local():
+            if len(x_orbit) != last_len["n"] and x_orbit and y_orbit and z_orbit:
+                last_len["n"] = len(x_orbit)
+
+                xo = np.array(x_orbit)
+                yo = np.array(y_orbit)
+                zo = np.array(z_orbit)
+
+                orbit_line.set_data(xo, yo)
+                orbit_line.set_3d_properties(zo)
+
+                satellite_marker.set_data(xo[-1:], yo[-1:])
+                satellite_marker.set_3d_properties(zo[-1:])
+
+                margin = 0.2
+                x_min, x_max = xo.min(), xo.max()
+                y_min, y_max = yo.min(), yo.max()
+                z_min, z_max = zo.min(), zo.max()
+
+                dx = x_max - x_min
+                dy = y_max - y_min
+                dz = z_max - z_min
+                max_range = max(dx, dy, dz) * (1 + margin)
+                if max_range == 0:
+                    max_range = R_EARTH_3D * 2.0
+
+                cx = (x_max + x_min) / 2.0
+                cy = (y_max + y_min) / 2.0
+                cz = (z_max + z_min) / 2.0
+
+                ax_local.set_xlim(cx - max_range / 2, cx + max_range / 2)
+                ax_local.set_ylim(cy - max_range / 2, cy + max_range / 2)
+                ax_local.set_zlim(cz - max_range / 2, cz + max_range / 2)
+
+                set_axes_equal(ax_local)
+                canvas_local.draw()
+
+            sim.after(800, actualizar_local)
+
+        actualizar_local()
+
+    def crear_orbita_mapa():
+        for w in frame_orbitmap.winfo_children():
+            w.destroy()
+
+        fig_map = Figure(figsize=FIGSIZE_ORBIT_FULL, dpi=100)
+        ax_map = fig_map.add_subplot(111)
+
+        ax_map.set_title("Ground track (forma sinusoidal suave)")
+        ax_map.set_xlabel("Longitud (°)")
+        ax_map.set_ylabel("Latitud (°)")
+
+        try:
+            img = plt.imread(MAP_IMAGE_PATH)
+        except Exception as e:
+            registrar_evento("ERRORES", f"No se pudo cargar mapa: {e}")
+            img = np.zeros((480, 960, 3), dtype=np.uint8)
+
+        ax_map.imshow(img, extent=[-180, 180, -90, 90],
+                      origin='upper', aspect='auto')
+        ax_map.set_xlim(-180, 180)
+        ax_map.set_ylim(-90, 90)
+
+        track_line, = ax_map.plot([], [], '-', color="red", linewidth=1.2, label="Trayectoria")
+        sat_point, = ax_map.plot([], [], 'o', markersize=4, color="green", label="Satélite")
+
+        ax_map.legend(fontsize=8)
+
+        frame_orbitmap.grid_rowconfigure(0, weight=1)
+        frame_orbitmap.grid_columnconfigure(0, weight=1)
+
+        canvas_map = FigureCanvasTkAgg(fig_map, master=frame_orbitmap)
+        canvas_map.draw()
+        canvas_map.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        def xyz_to_latlon_simple(x, y, z):
+            r = math.sqrt(x * x + y * y + z * z)
+            if r == 0:
+                return 0.0, 0.0
+            lat = math.degrees(math.asin(z / r))
+            lon = math.degrees(math.atan2(y, x))
+            lon = (lon + 180.0) % 360.0 - 180.0
+            return lat, lon
+
+        last_len = {"n": 0}
+
+        def suavizar(vals, N=10):
+            if len(vals) <= 2:
+                return vals
+            out = []
+            for idx in range(len(vals)):
+                i0 = max(0, idx - N)
+                i1 = min(len(vals), idx + N + 1)
+                ventana = vals[i0:i1]
+                out.append(sum(ventana) / len(ventana))
+            return out
+
+        def actualizar_mapa():
+            if len(x_orbit) != last_len["n"] and x_orbit and y_orbit and z_orbit:
+                last_len["n"] = len(x_orbit)
+
+                # De XYZ solo usamos las longitudes para colocar una curva ideal
+                lons_real = []
+                for X, Y, Z in zip(x_orbit, y_orbit, z_orbit):
+                    _, lon_r = xyz_to_latlon_simple(X, Y, Z)
+                    lons_real.append(lon_r)
+
+                if not lons_real:
+                    return
+
+                # Longitudes en radianes, normalizadas
+                lons_rad = [math.radians(lon) for lon in lons_real]
+                lon_min = min(lons_rad)
+                lon_max = max(lons_rad)
+                if lon_max == lon_min:
+                    factor = 1.0
+                else:
+                    factor = math.pi / (lon_max - lon_min)  # un ciclo suave
+
+                lons_norm = [(lon - lon_min) * factor for lon in lons_rad]
+
+                # Senoidal suave de +60º a -60º
+                amp = 60.0
+                lats_sin = [amp * math.sin(x_norm) for x_norm in lons_norm]
+                lats_suaves = suavizar(lats_sin, N=12)
+
+                lons_plot = [lons_real[0]]
+                lats_plot = [lats_suaves[0]]
+                for idx in range(1, len(lons_real)):
+                    lon_prev = lons_real[idx - 1]
+                    lon_cur = lons_real[idx]
+                    lat_cur = lats_suaves[idx]
+                    if abs(lon_cur - lon_prev) > 180:
+                        lons_plot.append(float('nan'))
+                        lats_plot.append(float('nan'))
+                    lons_plot.append(lon_cur)
+                    lats_plot.append(lat_cur)
+
+                track_line.set_data(lons_plot, lats_plot)
+                sat_point.set_data([lons_real[-1]], [lats_suaves[-1]])
+
+                canvas_map.draw()
+
+            sim.after(800, actualizar_mapa)
+
+        actualizar_mapa()
+
+    def show_orbit_mode():
+        frame_orbit3d.grid_forget()
+        frame_orbitmap.grid_forget()
+        if orbit_mode.get() == "3d":
+            frame_orbit3d.grid(row=0, column=0, sticky="nsew")
+        else:
+            frame_orbitmap.grid(row=0, column=0, sticky="nsew")
+
+    crear_orbita_3d()
+    crear_orbita_mapa()
+    show_orbit_mode()
+
+btn_sim = Button(controls_top,
+                 text="Simulación",
+                 bg="#020617", fg=ACCENT, relief="ridge", bd=1,
+                 activebackground="#020617", activeforeground=ACCENT,
+                 font=BTN_FONT, width=BTN_WIDTH,
+                 command=abrir_simulacion_orbital)
+btn_sim.grid(row=1, column=0, sticky="ew", pady=2)
+
+Label(controls_top, text="Observaciones:", bg=CARD_BG,
+      fg=TEXT_FG, font=("Segoe UI", 8, "bold")).grid(
+    row=2, column=0, sticky="w", pady=(4,1)
+)
+obs_entry = Entry(controls_top, width=24,
+                  bg="#020617", fg=TEXT_FG, insertbackground=TEXT_FG,
+                  relief="flat", font=("Segoe UI", 8))
+obs_entry.grid(row=3, column=0, sticky="ew", pady=(0,2))
+
+def registrar_observacion():
+    texto = obs_entry.get().strip()
+    if not texto:
+        return
+    registrar_evento("OBSERVACION", texto)
+    obs_entry.delete(0, END)
+
+btn_obs = Button(controls_top, text="Registrar obs",
+                 command=registrar_observacion,
+                 bg="#4ade80", fg="#020617", relief="flat",
+                 font=("Segoe UI", 8, "bold"), width=BTN_WIDTH)
+btn_obs.grid(row=4, column=0, sticky="ew", pady=2)
+
+Label(controls_top, text="Filtro eventos:", bg=CARD_BG,
+      fg=TEXT_FG, font=("Segoe UI", 8, "bold")).grid(
+    row=5, column=0, sticky="w", pady=(4,1)
+)
+filtro_var = StringVar(value="TODOS")
+filtro_opts = ["TODOS", "ALERTA", "OBSERVACION", "INFO SATELITE", "COMANDOS", "ERRORES"]
+om_filtro = OptionMenu(controls_top, filtro_var, *filtro_opts)
+om_filtro.config(bg="#020617", fg=TEXT_FG, highlightthickness=0,
+                 activebackground="#020617", activeforeground=TEXT_FG,
+                 font=("Segoe UI", 8))
+om_filtro["menu"].config(bg="#020617", fg=TEXT_FG, font=("Segoe UI", 8))
+om_filtro.grid(row=6, column=0, sticky="ew", pady=(0,2))
+
+def cambiar_filtro(*args):
+    global log_filter_tipo
+    log_filter_tipo = filtro_var.get()
+    refrescar_log()
+
+filtro_var.trace_add("write", cambiar_filtro)
+
+# Log principal (Text más pequeño y solo lectura)
+map_outer = Frame(frame_mapa, bg=CARD_BG)
+map_outer.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+map_outer.grid_rowconfigure(0, weight=1)
+map_outer.grid_columnconfigure(0, weight=1)
+
+log_frame = Frame(map_outer, bg=CARD_BG)
+log_frame.grid(row=0, column=0, sticky="nsew")
+log_frame.grid_rowconfigure(1, weight=1)
+log_frame.grid_columnconfigure(0, weight=1)
+
+Label(log_frame, text="Registro de eventos (filtrado)",
+      bg=CARD_BG, fg=TEXT_FG, font=("Segoe UI", 9, "bold")).grid(
+    row=0, column=0, sticky="w", padx=6, pady=(2, 0)
+)
+txt_log = Text(log_frame, bg="#020617", fg="#e5e7eb",
+               font=("Segoe UI", 8), height=8)
+txt_log.grid(row=1, column=0, sticky="nsew", padx=6, pady=4)
+txt_log.config(state="disabled")
+
+def refrescar_log():
+    txt_log.config(state="normal")
+    txt_log.delete("1.0", END)
+    for ts, tipo, desc in filtrar_logs_por_tipo()[-MAX_LOG_LINES:]:
+        txt_log.insert(END, f"{ts} | {tipo} | {desc}\n")
+    txt_log.config(state="disabled")
+    window.after(1000, refrescar_log)
+
+refrescar_log()
+
+# ---------- RADAR ----------
+add_header(frame_radar, "Radar ultrasónico / Servo")
+
+radar_outer = Frame(frame_radar, bg=CARD_BG)
+radar_outer.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+radar_outer.grid_rowconfigure(0, weight=3)
+radar_outer.grid_rowconfigure(1, weight=1)
+radar_outer.grid_columnconfigure(0, weight=1)
+
+radar_canvas_frame = Frame(radar_outer, bg=CARD_BG)
+radar_canvas_frame.grid(row=0, column=0, sticky="nsew")
+radar_canvas_frame.grid_rowconfigure(0, weight=1)
+radar_canvas_frame.grid_columnconfigure(0, weight=1)
+
+radar_ctrl_frame = Frame(radar_outer, bg=CARD_ALT)
+radar_ctrl_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0), padx=4)
+for c in range(5):
+    radar_ctrl_frame.grid_columnconfigure(c, weight=1)
+
+def abrir_radar():
+    for w in radar_canvas_frame.winfo_children():
+        w.destroy()
+
+    fig_radar = Figure(figsize=(5.0, 3.0), dpi=100)
+    ax_r = fig_radar.add_subplot(111, polar=True)
+
+    fig_radar.patch.set_facecolor("black")
+    ax_r.set_facecolor("black")
+
+    ax_r.set_theta_zero_location('N')
+    ax_r.set_theta_direction(1)
+    ax_r.set_thetamin(-90)
+    ax_r.set_thetamax(90)
+
+    ax_r.set_rlim(0, 400)
+    ax_r.set_rticks(range(0, 401, 50))
+
+    # Quitamos labels radiales automáticos para evitar solapes
+    ax_r.set_yticklabels([])
+    for r_val in range(0, 401, 50):
+        ax_r.text(
+            math.radians(92),      # un poco a la izquierda del eje 0°
+            r_val,
+            str(r_val),
+            color="lime",
+            fontsize=6,            # más pequeño
+            ha="left",
+            va="center"
+        )
+
+    ang_ticks = np.deg2rad(np.arange(-90, 91, 30))
+    ax_r.set_xticks(ang_ticks)
+    ax_r.set_xticklabels([f"{deg}°" for deg in range(-90, 91, 30)],
+                         color="lime", fontsize=7)
+
+    ax_r.grid(color="green", alpha=0.4)
+    ax_r.spines['polar'].set_color("lime")
+    ax_r.tick_params(colors="lime")
+    ax_r.set_title("Radar ultrasónico", color="lime", pad=10, fontsize=9)
+
+    info_text = ax_r.text(0.5, 0.94, "", transform=ax_r.transAxes,
+                          ha="center", va="bottom", color="lime", fontsize=8)
+
+    fig_radar.subplots_adjust(top=0.86, bottom=0.05, left=0.07, right=0.97)
+
+    canvas_r = FigureCanvasTkAgg(fig_radar, master=radar_canvas_frame)
+    canvas_r.draw()
+    canvas_r.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+    beam_line, = ax_r.plot([], [], color="lime", linewidth=2)
+
+    trail_length = 30
+    trail_lines = []
+    for i_local in range(trail_length):
+        alpha = max(0, 0.4 - i_local * 0.012)
+        line, = ax_r.plot([], [], color="lime", linewidth=1.0, alpha=alpha)
+        trail_lines.append(line)
+
+    echo_scatter = ax_r.scatter([], [], s=30, c="green")
+
+    frame_counter = {"n": 0}
+
+    def actualizar_radar_local():
+        frame_counter["n"] += 1
+
+        angle_deg = -90 + (frame_counter["n"] * 2.0) % 180
+        angle = math.radians(angle_deg)
+        r = np.linspace(0, 400, 200)
+        theta = np.full_like(r, angle)
+        beam_line.set_data(theta, r)
+
+        prev_theta, prev_r = beam_line.get_data()
+        last_theta, last_r = prev_theta, prev_r
+        for line in trail_lines:
+            lt, lr = line.get_data()
+            line.set_data(last_theta, last_r)
+            last_theta, last_r = lt, lr
+
+        if radar_echoes:
+            vivos = []
+            for eco in radar_echoes:
+                eco["age"] += 1
+                if eco["age"] <= RADAR_MAX_AGE:
+                    vivos.append(eco)
+            radar_echoes[:] = vivos
+
+            if radar_echoes:
+                t = [math.radians(e["ang"] - 90.0) for e in radar_echoes]
+                d = [e["dist"] for e in radar_echoes]
+                alphas = [max(0.0, 1.0 - e["age"] / RADAR_MAX_AGE) for e in radar_echoes]
+                colors = [[0.0, 1.0, 0.0, a] for a in alphas]
+                offsets = np.column_stack([t, d])
+                echo_scatter.set_offsets(offsets)
+                echo_scatter.set_color(colors)
+
+                ang_last = radar_echoes[-1]["ang"]
+                dist_last = radar_echoes[-1]["dist"]
+                info_text.set_text(f"Ángulo: {ang_last:.1f}°  Dist: {dist_last:.1f} cm")
+            else:
+                echo_scatter.set_offsets(np.empty((0, 2)))
+                echo_scatter.set_color([])
+                info_text.set_text("Sin ecos")
+        else:
+            echo_scatter.set_offsets(np.empty((0, 2)))
+            echo_scatter.set_color([])
+            info_text.set_text("Sin ecos")
+
+        canvas_r.draw()
+        window.after(60, actualizar_radar_local)
+
+    actualizar_radar_local()
+
+abrir_radar()
+
+Label(radar_ctrl_frame, text="Ángulo servo (0-180°):",
+      bg=CARD_ALT, fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=0, column=0, sticky="e", pady=2, padx=4
+)
+anguloVar = IntVar(value=90)
+Entry(radar_ctrl_frame, textvariable=anguloVar, width=5,
+      bg="#020617", fg=TEXT_FG, insertbackground=TEXT_FG,
+      relief="flat", font=ENTRY_FONT).grid(
+    row=0, column=1, sticky="w", padx=(4, 4), pady=2
+)
+
+def enviar_angulo():
+    try:
+        ang = int(anguloVar.get())
+        if 0 <= ang <= 180:
+            mySerial.write(f"2:{ang}\n".encode())
+            registrar_evento("COMANDOS", f"Enviar ángulo servo: {ang}°")
+        else:
+            messagebox.showerror("Error", "Ángulo debe estar entre 0 y 180")
+    except:
+        messagebox.showerror("Error", "Ángulo inválido")
+
+Label(radar_ctrl_frame, text="Intervalo ultra (ms):",
+      bg=CARD_ALT, fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=1, column=0, sticky="e", pady=2, padx=4
+)
+intervaloUltraVar = IntVar(value=300)
+Spinbox(radar_ctrl_frame, from_=50, to=10000, textvariable=intervaloUltraVar, width=6,
+        bg="#020617", fg=TEXT_FG,
+        buttonbackground="#1e293b", relief="flat",
+        font=ENTRY_FONT).grid(
+    row=1, column=1, sticky="w", padx=(4, 4), pady=2
+)
+
+def send_intervalo_ultra():
+    try:
+        ms = int(intervaloUltraVar.get())
+        mySerial.write(f"7:{ms}\n".encode())
+    except:
+        messagebox.showerror("Error", "Intervalo ultrasonidos inválido")
+    registrar_evento("COMANDOS", f"Enviar intervalo ultrasonidos: {intervaloUltraVar.get()}ms")
+
+Button(radar_ctrl_frame, text="Ángulo servo", command=enviar_angulo,
+       bg=ACCENT, fg="#020617", relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH).grid(
+    row=2, column=0, pady=3, padx=2, sticky="w"
+)
+
+Button(radar_ctrl_frame, text="Intervalo ultra", command=send_intervalo_ultra,
+       bg=ACCENT_2, fg="#020617", relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH).grid(
+    row=2, column=1, pady=3, padx=2, sticky="w"
+)
+
+def detener_barrido_servo():
+    try:
+        mySerial.write(b"6:0\n")
+        registrar_evento("COMANDOS", "Detener barrido servo (satélite)")
+    except:
+        messagebox.showerror("Error", "No se pudo enviar comando de detener barrido")
+
+def reanudar_barrido_servo():
+    try:
+        mySerial.write(b"6:1\n")
+        registrar_evento("COMANDOS", "Reanudar barrido servo (satélite)")
+    except:
+        messagebox.showerror("Error", "No se pudo enviar comando de reanudar barrido")
+
+Button(radar_ctrl_frame, text="Detener barrido",
+       command=detener_barrido_servo,
+       bg="#f97373", fg="#020617", relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH+1).grid(
+    row=2, column=2, pady=3, padx=2, sticky="w"
+)
+
+Button(radar_ctrl_frame, text="Reanudar barrido",
+       command=reanudar_barrido_servo,
+       bg="#16a34a", fg="#020617", relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH+1).grid(
+    row=2, column=3, pady=3, padx=2, sticky="w"
+)
+
+# ---------- GRÁFICAS ----------
+graf_header = add_header(frame_graf, "Gráficas / Medias / DHT / Control")
+
+graf_outer = Frame(frame_graf, bg=CARD_BG)
+graf_outer.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+graf_outer.grid_rowconfigure(0, weight=1)
+graf_outer.grid_columnconfigure(0, weight=3)
+graf_outer.grid_columnconfigure(1, weight=1)
+
+content_graf = Frame(graf_outer, bg=CARD_BG)
+content_graf.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+content_graf.grid_rowconfigure(0, weight=1)
+content_graf.grid_columnconfigure(0, weight=1)
+
+fig = Figure(figsize=(5.2, 3.2), dpi=100)
+gs = fig.add_gridspec(3, 1, height_ratios=[2.0, 1.0, 1.0])
+ax1 = fig.add_subplot(gs[0, 0])
+ax2 = fig.add_subplot(gs[1, 0])
+ax3 = fig.add_subplot(gs[2, 0])
+
+fig.subplots_adjust(top=0.93, bottom=0.10, left=0.12, right=0.99, hspace=0.65)
+fig.patch.set_facecolor(CARD_BG)
+for ax in (ax1, ax2, ax3):
+    ax.set_facecolor("#020617")
+    ax.tick_params(colors=TEXT_FG, labelsize=6)
+    ax.title.set_color(ACCENT)
+    ax.title.set_fontsize(8)
+    for spine in ax.spines.values():
+        spine.set_color("#64748b")
+    ax.grid(color="#1e293b", alpha=0.7)
+
+line_temp, = ax1.plot([], [], linestyle='-', color="#fb7185", label="Temperatura")
+ax1.set_title("Temperatura (°C)", pad=3)
+
+line_hum, = ax2.plot([], [], linestyle='-', color="#38bdf8", label="Humedad")
+ax2.set_title("Humedad (%)", pad=3)
+
+line_avg, = ax3.plot([], [], linestyle='-', color="#4ade80", label="Media móvil")
+ax3.set_title("Media móvil", pad=3)
+
+canvas = FigureCanvasTkAgg(fig, master=content_graf)
+canvas.draw()
+canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+cont_inner = Frame(graf_outer, bg=CARD_ALT)
+cont_inner.grid(row=0, column=1, sticky="nsew", padx=4, pady=(2, 2))
+for r in range(15):
+    cont_inner.grid_rowconfigure(r, weight=0)
+cont_inner.grid_rowconfigure(14, weight=1)
+cont_inner.grid_columnconfigure(0, weight=1)
+
+Label(cont_inner, text="Ground Station v3.0",
+      bg=CARD_ALT, fg=ACCENT, font=("Segoe UI", 8, "bold")).grid(
+    row=0, column=0, sticky="w", pady=(0, 3), padx=4
+)
+
+Label(cont_inner, text="Límite temperatura (°C):",
+      bg=CARD_ALT, fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=1, column=0, sticky="w", pady=1, padx=4
+)
+limiteVar = StringVar(value=str(limite_temp))
+Entry(cont_inner, textvariable=limiteVar, width=9,
+      bg="#020617", fg=TEXT_FG, insertbackground=TEXT_FG,
+      relief="flat", font=ENTRY_FONT).grid(
+    row=2, column=0, sticky="w", padx=(4, 4), pady=1
+)
+
+Label(cont_inner, text="Ventana media móvil (N):",
+      bg=CARD_ALT, fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=3, column=0, sticky="w", pady=1, padx=4
+)
+ventanaVar = IntVar(value=ventana_default)
+
+def recalcular_media():
+    global media_movil
+    N = max(1, int(ventanaVar.get()))
+    nueva_media = []
+    for j in range(len(temperaturas)):
+        if j + 1 >= N:
+            ventana = temperaturas[j + 1 - N:j + 1]
+        else:
+            ventana = temperaturas[:j + 1]
+        nueva_media.append(sum(ventana) / len(ventana))
+    media_movil = nueva_media
+    actualizar_graficas(force=True)
+
+Spinbox(cont_inner, from_=1, to=200, textvariable=ventanaVar, width=9,
+        bg="#020617", fg=TEXT_FG, buttonbackground="#1e293b",
+        relief="flat", font=ENTRY_FONT).grid(
+    row=4, column=0, sticky="w", padx=(4, 4), pady=1
+)
+ventanaVar.trace_add("write", lambda *args: recalcular_media())
+
+Label(cont_inner, text="Intervalo envío DHT (s):",
+      bg=CARD_ALT, fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=5, column=0, sticky="w", pady=1, padx=4
+)
+intervaloDHTVar = IntVar(value=3)
+Spinbox(cont_inner, from_=1, to=3600, textvariable=intervaloDHTVar, width=9,
+        bg="#020617", fg=TEXT_FG, buttonbackground="#1e293b",
+        relief="flat", font=ENTRY_FONT).grid(
+    row=6, column=0, sticky="w", padx=(4, 4), pady=1
+)
+
+def send_intervalo_dht():
+    try:
+        s = int(intervaloDHTVar.get())
+        mySerial.write(f"1:{s}\n".encode())
+    except:
+        messagebox.showerror("Error", "Intervalo DHT inválido")
+    registrar_evento("COMANDOS", f"Enviar intervalo DHT: {intervaloDHTVar.get()}s")
+
+Label(cont_inner, text="Dónde calcular la media:",
+      bg=CARD_ALT, fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=7, column=0, sticky="w", pady=(5, 1), padx=4
+)
+modoVar = StringVar(value="python")
+
+def modo_media_changed():
+    global modo_media
+    modo_media = modoVar.get()
+    if modo_media == "arduino":
+        try:
+            mySerial.write(b"8:1\n")
+            time.sleep(0.05)
+            n = int(ventanaVar.get())
+            mySerial.write(f"9:{n}\n".encode())
+        except:
+            pass
+    else:
+        try:
+            mySerial.write(b"8:0\n")
+        except:
+            pass
+
+Radiobutton(cont_inner, text="Python (local)", variable=modoVar, value="python",
+            command=modo_media_changed, bg=CARD_ALT, fg=TEXT_FG,
+            selectcolor="#020617", font=("Segoe UI", 8)).grid(
+    row=8, column=0, sticky="w", pady=(1, 1), padx=4
+)
+Radiobutton(cont_inner, text="Arduino (remoto)", variable=modoVar, value="arduino",
+            command=modo_media_changed, bg=CARD_ALT, fg=TEXT_FG,
+            selectcolor="#020617", font=("Segoe UI", 8)).grid(
+    row=9, column=0, sticky="w", pady=(1, 3), padx=4
+)
+
+Label(cont_inner, text="Estado alarma (medias):",
+      bg=CARD_ALT, fg=TEXT_FG, font=LABEL_FONT).grid(
+    row=10, column=0, sticky="w", pady=(4, 1), padx=4
+)
+alarma_media_label = Label(cont_inner, text="NORMAL", bg=OK_COLOR,
+                           fg='#020617', width=14, font=("Segoe UI", 8, "bold"))
+alarma_media_label.grid(row=11, column=0, sticky="w", padx=(4, 4), pady=(1, 4))
+
+row_btn = 12
+
+def IniciarClick():
+    global lectura_activa
+    lectura_activa = True
+    try:
+        mySerial.write(b'Iniciar\n')
+    except:
+        pass
+    ciclo_lectura()
+
+def PararClick():
+    global lectura_activa
+    lectura_activa = False
+    try:
+        mySerial.write(b'Parar\n')
+    except:
+        pass
+
+def ResetClick():
+    global temperaturas, humedades, eje_x, media_movil, i
+    global radar_echoes, alerta_activa, alerta_media_activa
+    global x_orbit, y_orbit, z_orbit
+    temperaturas = []
+    humedades = []
+    eje_x = []
+    media_movil = []
+    i = 0
+    radar_echoes = []
+    x_orbit = []
+    y_orbit = []
+    z_orbit = []
+    alerta_activa = False
+    alerta_media_activa = False
+    alarma_media_label.config(text="Normal", bg=OK_COLOR)
+    try:
+        mySerial.write(b'6:1\n')
+    except:
+        pass
+    actualizar_graficas(force=True)
+
+Button(cont_inner, text="Iniciar", bg=OK_COLOR, fg='#020617',
+       command=IniciarClick, width=BTN_WIDTH, font=BTN_FONT, relief="flat").grid(
+    row=row_btn, column=0, pady=BTN_PADY, padx=4, sticky="w"
+)
+row_btn += 1
+
+Button(cont_inner, text="Parar", bg=DANGER, fg='#020617',
+       command=PararClick, width=BTN_WIDTH, font=BTN_FONT, relief="flat").grid(
+    row=row_btn, column=0, pady=BTN_PADY, padx=4, sticky="w"
+)
+row_btn += 1
+
+Button(cont_inner, text="Reset", bg="#facc15", fg='#020617',
+       command=ResetClick, width=BTN_WIDTH, font=BTN_FONT, relief="flat").grid(
+    row=row_btn, column=0, pady=BTN_PADY, padx=4, sticky="w"
+)
+row_btn += 1
+
+Button(cont_inner, text="Enviar DHT+Ultra",
+       command=lambda: (send_intervalo_dht(), send_intervalo_ultra()),
+       bg="#1d4ed8", fg="#e5f2ff", relief="flat",
+       font=BTN_FONT, width=BTN_WIDTH).grid(
+    row=row_btn, column=0, pady=BTN_PADY, padx=4, sticky="w"
+)
+
+# =================== GRÁFICAS Y SERIE ===================
+def actualizar_graficas(force=False):
+    line_temp.set_data(eje_x, temperaturas)
+    line_hum.set_data(eje_x, humedades)
+
+    media_plot = []
+    for m in media_movil:
+        if m is None or (isinstance(m, float) and math.isnan(m)):
+            media_plot.append(0)
+        else:
+            media_plot.append(m)
+
+    line_avg.set_data(eje_x[:len(media_plot)], media_plot)
+
+    ax1.relim(); ax1.autoscale_view()
+    ax2.relim(); ax2.autoscale_view()
+    ax3.relim(); ax3.autoscale_view()
+
+    canvas.draw()
+
+def leer_serial():
+    global i, alerta_activa, alerta_media_activa, last_angle_received, last_dht_accepted_ms
+
+    try:
+        while mySerial.in_waiting > 0:
+            raw = mySerial.readline().decode('utf-8', errors='ignore').strip()
+            if not raw:
+                continue
+
+            # Alertas procedentes de la estación tierra (BRIDGE)
+            if raw.startswith("BRIDGE:"):
+                msg = raw[len("BRIDGE:"):].strip()
+
+                if "DHT fallo" in msg:
+                    registrar_evento("ERRORES", "Estación: fallo DHT (BRIDGE)")
+                elif "Ultra fallo" in msg:
+                    registrar_evento("ERRORES", "Estación: fallo ultrasonidos (BRIDGE)")
+                elif "Sin satélite" in msg:
+                    registrar_evento("ALERTA", "Estación: sin satélite (timeout comunicación)")
+                elif "SATELITE PERDIDO" in msg:
+                    registrar_evento("ALERTA", "Estación: satélite perdido (LCD)")
+                elif "Satélite OK" in msg or "SATELITE OK" in msg:
+                    registrar_evento("INFO SATELITE", "Estación: comunicación recuperada")
+                elif "DHT OK" in msg:
+                    registrar_evento("INFO SATELITE", "Estación: DHT OK")
+                elif "Ultra OK" in msg:
+                    registrar_evento("INFO SATELITE", "Estación: ultrasonidos OK")
+                elif "AMENAZA" in msg:
+                    registrar_evento("ALERTA", "Estación: amenaza detectada (<=50cm)")
+                elif "Seguro" in msg:
+                    registrar_evento("INFO SATELITE", "Estación: área segura (>50cm)")
+                else:
+                    registrar_evento("INFO SATELITE", "BRIDGE: " + msg)
+                continue
+
+            if raw.startswith("CHK:"):
+                try:
+                    partes = raw.split(':')
+                    if len(partes) < 3:
+                        registrar_evento("ERRORES", "Mensaje corrupto (checksum incompleto)")
+                        continue
+                    data = ':'.join(partes[1:-1])
+                    checksum_recv = int(partes[-1])
+                    checksum_calc = sum(bytearray(data, 'utf-8')) % 256
+                    if checksum_recv != checksum_calc:
+                        registrar_evento("ERRORES", f"Checksum inválido: {raw}")
+                        continue
+                    raw = data
+                except Exception as e:
+                    registrar_evento("ERRORES", f"Error leyendo checksum: {raw} ({e})")
+                    continue
+
+            trozos = raw.split(':')
+            now_ms = int(time.time() * 1000)
+
+            if len(trozos) >= 3 and trozos[0] == '1':
+                intervalo_ms = max(0, int(intervaloDHTVar.get())) * 1000
+                if intervalo_ms == 0 or now_ms - last_dht_accepted_ms >= intervalo_ms:
+                    last_dht_accepted_ms = now_ms
+                    try:
+                        temperatura = float(trozos[1])
+                        hum = float(trozos[2])
+                    except:
+                        continue
+                    eje_x.append(i)
+                    temperaturas.append(temperatura)
+                    humedades.append(hum)
+                    i += 1
+
+                    N = max(1, int(ventanaVar.get()))
+                    if modoVar.get() == "arduino" and len(trozos) >= 5 and trozos[3] == 'A':
+                        try:
+                            media_movil.append(float(trozos[4]))
+                        except:
+                            media_movil.append(
+                                sum(temperaturas[-N:]) / N if len(temperaturas) >= N else float('nan'))
+                    else:
+                        media_movil.append(
+                            sum(temperaturas[-N:]) / N if len(temperaturas) >= N else float('nan'))
+
+                    if len(temperaturas) >= 3 and all(
+                            x > float(limiteVar.get()) for x in temperaturas[-3:]) and not alerta_activa:
+                        alerta_activa = True
+                        messagebox.showwarning("Alerta", f"Últimas 3 temperaturas superan {limiteVar.get()} °C")
+                        registrar_evento("ALERTA",
+                                         f"Temperatura alta: últimas 3 superan {limiteVar.get()} °C")
+                    elif alerta_activa and len(temperaturas) >= 3 and not all(
+                            x > float(limiteVar.get()) for x in temperaturas[-3:]):
+                        alerta_activa = False
+
+                    medias_validas = [m for m in media_movil if not (isinstance(m, float) and math.isnan(m))]
+                    if len(medias_validas) >= 3 and all(
+                            m > float(limiteVar.get()) for m in medias_validas[-3:]):
+                        alerta_media_activa = True
+                        alarma_media_label.config(text="Peligro", bg=DANGER)
+                    else:
+                        alerta_media_activa = False
+                        alarma_media_label.config(text="Normal", bg=OK_COLOR)
+
+            elif len(trozos) >= 3 and trozos[0] == '2':
+                try:
+                    ang = float(trozos[1])
+                    dist = float(trozos[2])
+                    last_angle_received = ang
+
+                    if 0 <= ang <= 180:
+                        radar_echoes.append({"ang": ang, "dist": dist, "age": 0})
+                        if len(radar_echoes) > RADAR_MAX_POINTS:
+                            radar_echoes[:] = radar_echoes[-RADAR_MAX_POINTS:]
+                    else:
+                        registrar_evento("ERRORES", f"Ángulo radar inválido: {ang}")
+                except Exception as e:
+                    registrar_evento("ERRORES", f"Radar inválido: {raw} ({e})")
+
+            elif trozos[0] == '3':
+                registrar_evento("ERRORES", "Satélite: fallo DHT")
+            elif trozos[0] == '5':
+                registrar_evento("INFO SATELITE", "Satélite msg: " + ":".join(trozos[1:]))
+            elif trozos[0] == '6':
+                registrar_evento("ERRORES", "Satélite: fallo sensor distancia")
+            else:
+                registrar_evento("INFO SATELITE", "Otro mensaje: " + raw)
+
+            match = regex_orbit.search(raw)
+            if match:
+                try:
+                    x_orbit.append(float(match.group(1)))
+                    y_orbit.append(float(match.group(2)))
+                    z_orbit.append(float(match.group(3)))
+
+                    if len(x_orbit) > MAX_ORBIT_POINTS:
+                        x_orbit[:] = x_orbit[-MAX_ORBIT_POINTS:]
+                        y_orbit[:] = y_orbit[-MAX_ORBIT_POINTS:]
+                        z_orbit[:] = z_orbit[-MAX_ORBIT_POINTS:]
+                except ValueError:
+                    registrar_evento("ERRORES", f"Órbita inválida: {raw}")
+
+    except serial.SerialException as e:
+        print("Error puerto serie:", e)
+        registrar_evento("ERRORES", f"Error puerto serie: {e}")
+
+def ciclo_lectura():
+    if lectura_activa:
+        leer_serial()
+        actualizar_graficas()
+        window.after(120, ciclo_lectura)
+
+def on_close():
+    global lectura_activa
+    lectura_activa = False
+    try:
+        mySerial.close()
+    except:
+        pass
+    window.destroy()
+
+window.protocol("WM_DELETE_WINDOW", on_close)
+window.mainloop()
