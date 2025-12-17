@@ -1,5 +1,6 @@
 import matplotlib
-matplotlib.use("TkAgg")
+matplotlib.use("TkAgg")  # Backend de Matplotlib para integrarse con Tkinter
+
 import matplotlib.collections
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -19,14 +20,17 @@ import datetime
 import os
 
 # =================== CONFIG ===================
-device = 'COM6'  # Cambia al puerto correcto
+device = 'COM6'  # Cambiar al puerto serie correcto según el equipo
 MAP_IMAGE_PATH = r"C:\Users\kauav\Desktop\Versión 4\earth_hd.jpg"
 
-# Tamaños de figura para órbita/mapa
+# Tamaños de figura para la órbita/mapa en modo normal y pantalla completa
 FIGSIZE_ORBIT_NORMAL = (6, 3.2)
 FIGSIZE_ORBIT_FULL   = (11, 6)
 
+# =================== Puerto serie y variables globales ===================
+
 class DummySerial:
+    """Clase de simulación del puerto serie si no se puede abrir el real."""
     def write(self, data):
         print("SERIAL SIM:", data.decode(errors="ignore").strip())
 
@@ -40,6 +44,7 @@ class DummySerial:
     def close(self):
         pass
 
+# Intentar abrir puerto serie real, y si falla, usar DummySerial
 try:
     mySerial = serial.Serial(device, 9600, timeout=1)
     print(f"Puerto serie {device} abierto correctamente")
@@ -48,34 +53,37 @@ except serial.SerialException as e:
     print("Usando puerto serie simulado (DummySerial).")
     mySerial = DummySerial()
 
-# =================== Variables de datos ===================
+# =================== Variables de datos (temperatura/humedad) ===================
 temperaturas = []
 humedades = []
 eje_x = []
 media_movil = []
 
-alerta_activa = False
-alerta_media_activa = False
-limite_temp = 30.0
-ventana_default = 10
-i = 0
-lectura_activa = False
+alerta_activa = False          # Para alertas por temperatura instantánea
+alerta_media_activa = False    # Para alertas basadas en la media móvil
+limite_temp = 30.0            # Límite de temperatura para disparar alertas
+ventana_default = 10          # Tamaño de ventana por defecto para media móvil
+i = 0                         # Índice para eje x (contador de muestras)
+lectura_activa = False        # Control de lectura continua desde el puerto serie
 
-radar_echoes = []
-RADAR_MAX_POINTS = 50
-RADAR_MAX_AGE = 10
-last_angle_received = None
+# =================== Variables radar ===================
+radar_echoes = []             # Lista de ecos detectados por el radar
+RADAR_MAX_POINTS = 50         # Máximo número de ecos almacenados
+RADAR_MAX_AGE = 10            # “Edad” máxima de los ecos antes de borrarlos
+last_angle_received = None    # Último ángulo recibido desde el radar
 
-modo_media = "python"
-last_dht_accepted_ms = 0
+# =================== Modo media y control DHT ===================
+modo_media = "python"         # "python" => media local, "arduino" => media calculada en Arduino
+last_dht_accepted_ms = 0      # Marca de tiempo de la última muestra DHT aceptada
 
 # =================== Variables órbita ===================
 x_orbit = []
 y_orbit = []
 z_orbit = []
-R_EARTH = 3.5e6
-MAX_ORBIT_POINTS = 2000
+R_EARTH = 3.5e6               # Radio de la Tierra para el dibujo en 3D
+MAX_ORBIT_POINTS = 2000       # Máximo de puntos de la órbita a almacenar
 
+# Expresión regular para extraer datos de órbita desde el texto recibido por serie
 regex_orbit = re.compile(
     r"Orbit \| Time: [\d\.]+ s \| X: ([\d\.-]+) m, Y: ([\d\.-]+) m, Z: ([\d\.-]+)"
 )
@@ -83,8 +91,8 @@ regex_orbit = re.compile(
 # =================== Registro de eventos ===================
 LOG_FILE = "eventos.log"
 
-
 def registrar_evento(tipo, descripcion):
+    """Registra un evento en el archivo de log y lo muestra en consola."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     linea = f"{timestamp} | {tipo} | {descripcion}\n"
     try:
@@ -94,8 +102,8 @@ def registrar_evento(tipo, descripcion):
         print("Error escribiendo log:", e)
     print("EVENTO:", linea.strip())
 
-
 def recalcular_media():
+    """Recalcula la serie completa de media móvil al cambiar la ventana."""
     global media_movil
     N = max(1, int(ventanaVar.get()))
     nueva_media = []
@@ -108,12 +116,13 @@ def recalcular_media():
     media_movil = nueva_media
     actualizar_graficas(force=True)
 
+# =================== Ventana principal y layout general ===================
 
-# =================== Ventana principal ===================
 window = Tk()
 window.title("Ground Station - Radar + Gráficas + Órbita")
-window.state("zoomed")
+window.state("zoomed")  # Maximizar ventana
 
+# Colores y estilos base
 DARK_BG = "#202124"
 CARD_BG = "#111111"
 TEXT_FG = "#f5f5f5"
@@ -123,11 +132,13 @@ window.configure(bg=DARK_BG)
 LABEL_FONT = ("Segoe UI", 11)
 ENTRY_FONT = ("Segoe UI", 11)
 
+# Rejilla principal: 2 filas, 2 columnas
 window.grid_rowconfigure(0, weight=3)
 window.grid_rowconfigure(1, weight=2)
 window.grid_columnconfigure(0, weight=1)
 window.grid_columnconfigure(1, weight=1)
 
+# Frames principales: mapa/órbita, radar y gráficas
 frame_mapa  = Frame(window, bg=CARD_BG, bd=2, relief="ridge")
 frame_radar = Frame(window, bg=CARD_BG, bd=2, relief="ridge")
 frame_graf  = Frame(window, bg=CARD_BG, bd=2, relief="ridge")
@@ -141,28 +152,31 @@ for f in (frame_mapa, frame_radar, frame_graf):
     f.grid_rowconfigure(1, weight=1)
     f.grid_columnconfigure(0, weight=1)
 
-# =================== Pantalla completa ===================
+# =================== Gestión de pantalla completa ===================
+
 fullscreen_state = {
-    "active": False,
-    "target": None,
-    "ctrl_frames": {}
+    "active": False,   # Indica si hay un frame en modo pantalla completa
+    "target": None,    # Frame que está en pantalla completa
+    "ctrl_frames": {}  # Diccionario frame_principal -> frame_controles_ocultables
 }
 
-
 def register_controls_frame(main_frame, ctrl_frame):
+    """Registra qué sub-frame de controles se debe mostrar/ocultar en fullscreen."""
     fullscreen_state["ctrl_frames"][main_frame] = ctrl_frame
 
-
 def enter_fullscreen(target_frame):
+    """Pone un frame (mapa/radar/gráficas) en modo pantalla completa."""
     if fullscreen_state["active"]:
         return
     fullscreen_state["active"] = True
     fullscreen_state["target"] = target_frame
 
+    # Ocultar los frames principales
     frame_mapa.grid_remove()
     frame_radar.grid_remove()
     frame_graf.grid_remove()
 
+    # Reconfigurar la rejilla para un único frame
     for r in range(3):
         window.grid_rowconfigure(r, weight=0)
     for c in range(3):
@@ -172,16 +186,18 @@ def enter_fullscreen(target_frame):
 
     target_frame.grid(row=0, column=0, sticky="nsew")
 
+    # En modo fullscreen del mapa se reconstruyen las figuras con tamaño grande
     if target_frame is frame_mapa:
         crear_orbita_3d()
         crear_orbita_mapa()
 
+    # Mostrar panel de controles asociado (si existe)
     ctrl = fullscreen_state["ctrl_frames"].get(target_frame)
     if ctrl is not None:
         ctrl.grid()
 
-
 def exit_fullscreen():
+    """Sale del modo pantalla completa y restaura el layout original."""
     if not fullscreen_state["active"]:
         return
 
@@ -190,6 +206,7 @@ def exit_fullscreen():
     if ctrl is not None:
         ctrl.grid_remove()
 
+    # Restaurar rejilla principal
     frame_mapa.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=8, pady=8)
     frame_radar.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
     frame_graf.grid(row=1, column=1, sticky="nsew", padx=8, pady=8)
@@ -203,55 +220,68 @@ def exit_fullscreen():
     window.grid_columnconfigure(0, weight=1)
     window.grid_columnconfigure(1, weight=1)
 
+    # Volver a crear órbita/mapa con tamaño normal
     crear_orbita_3d()
     crear_orbita_mapa()
 
     fullscreen_state["active"] = False
     fullscreen_state["target"] = None
 
-
 def add_fullscreen_header(frame, title_text):
+    """
+    Añade una cabecera a cada frame principal con:
+    - título
+    - botón para entrar en fullscreen
+    - botón para salir de fullscreen
+    """
     header = Frame(frame, bg=CARD_BG, bd=0, highlightthickness=0)
     header.grid(row=0, column=0, sticky="ew")
     header.grid_columnconfigure(0, weight=1)
+
     lbl = Label(header, text=title_text, bg=CARD_BG, fg=TEXT_FG,
                 font=("Segoe UI", 11, "bold"))
     lbl.grid(row=0, column=0, sticky="w", padx=6, pady=4)
+
     btn_fs = Button(header, text="□", bg="#878282", fg=TEXT_FG, bd=0,
                     command=lambda f=frame: enter_fullscreen(f))
     btn_fs.grid(row=0, column=1, sticky="e", padx=4)
+
     btn_exit = Button(header, text="-", bg="#878282", fg=TEXT_FG, bd=0,
                       command=exit_fullscreen)
     btn_exit.grid(row=0, column=2, sticky="e", padx=4)
 
+# =================== 1) MAPA / ÓRBITA / EVENTOS ===================
 
-# =================== 1) MAPA / ÓRBITA ===================
 add_fullscreen_header(frame_mapa, "Órbita / Mapa mundi / Eventos")
 
+# Contenedor general dentro del frame de mapa
 map_outer = Frame(frame_mapa, bg=CARD_BG)
 map_outer.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-map_outer.grid_rowconfigure(0, weight=3)
-map_outer.grid_rowconfigure(1, weight=1)
+map_outer.grid_rowconfigure(0, weight=3)  # parte superior: órbita
+map_outer.grid_rowconfigure(1, weight=1)  # parte inferior: eventos
 map_outer.grid_columnconfigure(0, weight=1)
 
+# Parte superior: órbita 3D / mapa 2D
 orbita_inner = Frame(map_outer, bg=CARD_BG)
 orbita_inner.grid(row=0, column=0, sticky="nsew")
 orbita_inner.grid_rowconfigure(0, weight=0)
 orbita_inner.grid_rowconfigure(1, weight=1)
 orbita_inner.grid_columnconfigure(0, weight=1)
 
+# Variable para modo de visualización de órbita: "3d" o "map"
 orbit_mode = StringVar(value="3d")
 
+# Frame contenedor de las dos vistas (3D y mapa)
 frame_orbit_container = Frame(orbita_inner, bg=CARD_BG)
 frame_orbit_container.grid(row=1, column=0, sticky="nsew")
 frame_orbit_container.grid_rowconfigure(0, weight=1)
 frame_orbit_container.grid_columnconfigure(0, weight=1)
 
-frame_orbit3d = Frame(frame_orbit_container, bg=CARD_BG)
-frame_orbitmap = Frame(frame_orbit_container, bg=CARD_BG)
-
+frame_orbit3d = Frame(frame_orbit_container, bg=CARD_BG)   # Vista 3D
+frame_orbitmap = Frame(frame_orbit_container, bg=CARD_BG)  # Vista mapa 2D
 
 def show_orbit_mode():
+    """Muestra el frame de órbita 3D o el de mapa según orbit_mode."""
     frame_orbit3d.place_forget()
     frame_orbitmap.place_forget()
     if orbit_mode.get() == "3d":
@@ -259,19 +289,21 @@ def show_orbit_mode():
     else:
         frame_orbitmap.place(relx=0.5, rely=0.5, anchor="center")
 
-
 def toggle_orbit_mode():
+    """Alterna entre vista 3D y vista mapa."""
     orbit_mode.set("map" if orbit_mode.get() == "3d" else "3d")
     show_orbit_mode()
 
-
+# Botón para alternar modo de órbita
 btn_toggle = Button(orbita_inner, text="Modo: 3D / Mapa",
                     bg="#333333", fg=TEXT_FG, bd=0,
                     command=toggle_orbit_mode)
 btn_toggle.grid(row=0, column=0, sticky="e", padx=10, pady=4)
 
+# ----- Panel de eventos y observaciones -----
 eventos_inner = Frame(map_outer, bg="black")
 eventos_inner.grid(row=1, column=0, sticky="nsew", padx=4, pady=(8, 0))
+
 for r in range(6):
     eventos_inner.grid_rowconfigure(r, weight=0)
 eventos_inner.grid_rowconfigure(5, weight=1)
@@ -290,6 +322,8 @@ Label(eventos_inner, text="Registrar observación:",
       bg="black", fg=TEXT_FG, font=("Segoe UI", 11)).grid(
     row=1, column=0, sticky="w", pady=(4, 2), padx=4
 )
+
+# Campo de texto para observación manual
 observacionVar = StringVar()
 Entry(eventos_inner, textvariable=observacionVar,
       bg="#2b2b2b", fg=TEXT_FG, insertbackground=TEXT_FG,
@@ -297,8 +331,8 @@ Entry(eventos_inner, textvariable=observacionVar,
     row=2, column=0, sticky="ew", padx=4, pady=(0, 4)
 )
 
-
 def registrar_observacion():
+    """Guarda una observación manual en el log."""
     obs = observacionVar.get().strip()
     if obs:
         registrar_evento("OBSERVACION", obs)
@@ -307,8 +341,8 @@ def registrar_observacion():
     else:
         messagebox.showwarning("Campo vacío", "Ingrese una observación antes de registrar.")
 
-
 def abrir_visor_eventos():
+    """Abre una ventana con el contenido del log y filtros básicos."""
     try:
         with open(LOG_FILE, "r", encoding="utf-8") as f:
             lineas = f.readlines()
@@ -320,6 +354,7 @@ def abrir_visor_eventos():
     visor.title("Visor de Eventos")
     visor.geometry("800x600")
 
+    # Frame de filtros
     filtro_frame = Frame(visor)
     filtro_frame.pack(side=TOP, fill="x", padx=5, pady=5)
 
@@ -333,6 +368,7 @@ def abrir_visor_eventos():
     texto_buscar_var = StringVar()
     Entry(filtro_frame, textvariable=texto_buscar_var, width=20).pack(side=LEFT, padx=(5, 15))
 
+    # Área de texto con scrollbar
     text_frame = Frame(visor)
     text_frame.pack(fill="both", expand=True, padx=5, pady=5)
     scrollbar = Scrollbar(text_frame)
@@ -342,6 +378,7 @@ def abrir_visor_eventos():
     scrollbar.config(command=text_area.yview)
 
     def actualizar_texto():
+        """Aplica filtros al log y actualiza el área de texto."""
         text_area.delete(1.0, END)
         tipo_filtro = tipo_var.get()
         buscar_texto = texto_buscar_var.get().strip().lower()
@@ -364,7 +401,6 @@ def abrir_visor_eventos():
     Button(filtro_frame, text="Actualizar", command=actualizar_texto).pack(side=RIGHT)
     actualizar_texto()
 
-
 Button(eventos_inner, text="Registrar observación", command=registrar_observacion,
        bg="#3b4252", fg="#eceff4", relief="flat",
        font=BTN_FONT, width=BTN_WIDTH).grid(
@@ -377,22 +413,29 @@ Button(eventos_inner, text="Abrir Visor de Eventos", command=abrir_visor_eventos
     row=4, column=0, pady=BTN_PADY, padx=4, sticky="w"
 )
 
+# Registrar este panel como panel de controles asociado al frame del mapa
 register_controls_frame(frame_mapa, eventos_inner)
-eventos_inner.grid_remove()
+eventos_inner.grid_remove()  # Ocultarlo por defecto (solo en fullscreen)
 
 # ----- Órbita 3D -----
 def crear_orbita_3d():
+    """
+    Crea o recrea la figura 3D de la órbita dentro de frame_orbit3d.
+    Ajusta el tamaño según si está en fullscreen o no.
+    """
     if fullscreen_state["active"] and fullscreen_state["target"] is frame_mapa:
         fs = FIGSIZE_ORBIT_FULL
     else:
         fs = FIGSIZE_ORBIT_NORMAL
 
+    # Limpia cualquier contenido previo del frame
     for w in frame_orbit3d.winfo_children():
         w.destroy()
 
     fig_local = Figure(figsize=fs, dpi=100)
     ax_local = fig_local.add_subplot(111, projection='3d')
 
+    # Estética de la figura
     fig_local.patch.set_facecolor(CARD_BG)
     ax_local.set_facecolor("#000000")
     ax_local.set_title("Órbita Satélite 3D", color=TEXT_FG)
@@ -401,6 +444,7 @@ def crear_orbita_3d():
     ax_local.set_zlabel("Z (m)", color=TEXT_FG)
     ax_local.tick_params(colors=TEXT_FG)
 
+    # Dibujar esfera que representa la Tierra
     R_EARTH_3D = R_EARTH
     u = np.linspace(0, 2 * np.pi, 40)
     v = np.linspace(0, np.pi, 20)
@@ -410,17 +454,22 @@ def crear_orbita_3d():
     ax_local.plot_surface(x_sphere, y_sphere, z_sphere, color='#1e90ff',
                           edgecolor='none', alpha=0.9)
 
+    # Curva de órbita y marcador del satélite
     orbit_line, = ax_local.plot([], [], [], '-', linewidth=2, color='yellow', label='Órbita')
     satellite_marker, = ax_local.plot([], [], [], 'o', markersize=6, color='red', label='Satélite')
     ax_local.legend(facecolor="#111111", edgecolor="#444444", labelcolor=TEXT_FG)
 
+    # Integrar figura en Tkinter
     canvas_local = FigureCanvasTkAgg(fig_local, master=frame_orbit3d)
     canvas_local.draw()
     canvas_local.get_tk_widget().pack(expand=True, fill="both")
 
-    last_len = {"n": 0}
+    last_len = {"n": 0}  # Para detectar cuando hay nuevos puntos
 
     def actualizar_local():
+        """
+        Actualiza periódicamente la órbita dibujada con los datos de x_orbit, y_orbit, z_orbit.
+        """
         if len(x_orbit) != last_len["n"] and x_orbit and y_orbit and z_orbit:
             last_len["n"] = len(x_orbit)
 
@@ -431,9 +480,11 @@ def crear_orbita_3d():
             orbit_line.set_data(xo, yo)
             orbit_line.set_3d_properties(zo)
 
+            # Marcador en la última posición
             satellite_marker.set_data(xo[-1:], yo[-1:])
             satellite_marker.set_3d_properties(zo[-1:])
 
+            # Ajuste automático de límites para encuadrar la órbita
             margin = 0.1
             x_min, x_max = xo.min(), xo.max()
             y_min, y_max = yo.min(), yo.max()
@@ -463,6 +514,10 @@ def crear_orbita_3d():
 
 # ----- Mapa 2D: imagen completa sin recortes -----
 def crear_orbita_mapa():
+    """
+    Crea o recrea el mapa 2D con la traza de la órbita proyectada en lat/lon.
+    La imagen se muestra siempre completa, sin zoom dinámico.
+    """
     if fullscreen_state["active"] and fullscreen_state["target"] is frame_mapa:
         fs = FIGSIZE_ORBIT_FULL
     else:
@@ -481,17 +536,18 @@ def crear_orbita_mapa():
     for spine in ax_map.spines.values():
         spine.set_color(TEXT_FG)
 
+    # Cargar imagen de mapa. Si falla, usar un mapa negro.
     try:
         img = plt.imread(MAP_IMAGE_PATH)
     except Exception as e:
         registrar_evento("ERRORES", f"No se pudo cargar mapa: {e}")
         img = np.zeros((480, 960, 3), dtype=np.uint8)
 
-    # Mostrar SIEMPRE la imagen completa
+    # Mostrar siempre la imagen completa, mapeada de -180..180 en lon, -90..90 en lat
     ax_map.imshow(img, extent=[-180, 180, -90, 90],
-                  origin='upper', aspect='auto')  # evita recorte al cambiar tamaño [web:220][web:223]
+                  origin='upper', aspect='auto')
 
-    # Fijar límites exactamente al mapa
+    # Fijar límites del gráfico exactamente al mapa
     ax_map.set_xlim(-180, 180)
     ax_map.set_ylim(-90, 90)
 
@@ -505,22 +561,27 @@ def crear_orbita_mapa():
     canvas_map.get_tk_widget().pack(expand=True, fill="both")
 
     def xyz_to_latlon_simple(x, y, z):
+        """Convierte coordenadas cartesianas (x,y,z) a latitud y longitud aproximadas."""
         r = math.sqrt(x * x + y * y + z * z)
         if r == 0:
             return 0.0, 0.0
         lat = math.degrees(math.asin(z / r))
         lon = math.degrees(math.atan2(y, x))
+        # Normalizar lon a [-180, 180]
         lon = (lon + 180.0) % 360.0 - 180.0
         return lat, lon
 
+    # Parámetros para “forzar” la traza a una forma sinusoidal visible
     k = 2.0 * math.pi / 180.0
     phase = 0.0
     last_len = {"n": 0}
 
     def actualizar_mapa():
+        """Actualiza la traza sobre el mapa con los datos actuales de órbita."""
         if len(x_orbit) != last_len["n"] and x_orbit and y_orbit and z_orbit:
             last_len["n"] = len(x_orbit)
 
+            # Calcular latitud/longitud real (aunque luego se use una versión “forzada”)
             lats_real = []
             lons_real = []
             for X, Y, Z in zip(x_orbit, y_orbit, z_orbit):
@@ -528,6 +589,7 @@ def crear_orbita_mapa():
                 lats_real.append(lat_r)
                 lons_real.append(lon_r)
 
+            # Elegir amplitud de la senoide en función de latitudes recientes
             if lats_real:
                 N = min(500, len(lats_real))
                 lat_slice = lats_real[-N:]
@@ -535,9 +597,11 @@ def crear_orbita_mapa():
             else:
                 amp = 75.0
 
+            # Generar latitudes “forzadas” sinusoidales
             lats_forzadas = [amp * math.sin(k * lon_r + phase)
                              for lon_r in lons_real]
 
+            # Evitar líneas cruzando todo el mapa cuando se pasa de -180 a 180
             lons_plot = [lons_real[0]]
             lats_plot = [lats_forzadas[0]]
             for idx in range(1, len(lons_real)):
@@ -552,23 +616,25 @@ def crear_orbita_mapa():
 
             track_line.set_data(lons_plot, lats_plot)
 
+            # Posición actual del satélite
             lon_last = lons_real[-1]
             lat_last = lats_forzadas[-1]
             sat_point.set_data([lon_last], [lat_last])
 
-            # NO tocar xlim/ylim aquí, para no hacer zoom al mapa [web:222]
-
+            # No tocar xlim/ylim para mantener el mapa completo
             canvas_map.draw()
 
         window.after(800, actualizar_mapa)
 
     actualizar_mapa()
 
+# Crear figuras iniciales de órbita y mapa
 crear_orbita_3d()
 crear_orbita_mapa()
 show_orbit_mode()
 
 # =================== 2) RADAR ===================
+
 add_fullscreen_header(frame_radar, "Radar ultrasónico + Servo / Ultras")
 
 radar_outer = Frame(frame_radar, bg=CARD_BG)
@@ -582,12 +648,17 @@ radar_canvas_frame.grid(row=0, column=0, sticky="nsew")
 radar_canvas_frame.grid_rowconfigure(0, weight=1)
 radar_canvas_frame.grid_columnconfigure(0, weight=1)
 
+# Frame con controles del radar (ángulo, intervalo, etc.)
 radar_ctrl_frame = Frame(radar_outer, bg="black")
 radar_ctrl_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0), padx=4)
 for c in range(3):
     radar_ctrl_frame.grid_columnconfigure(c, weight=1)
 
 def abrir_radar():
+    """
+    Crea la figura del radar en modo polar y la integra en radar_canvas_frame.
+    Incluye un haz que se mueve y ecos persistentes.
+    """
     for w in radar_canvas_frame.winfo_children():
         w.destroy()
 
@@ -597,16 +668,19 @@ def abrir_radar():
     fig_radar.patch.set_facecolor(CARD_BG)
     ax_r.set_facecolor("black")
 
+    # Configuración polar: 0° en el norte y barrido -90° a 90°
     ax_r.set_theta_zero_location('N')
     ax_r.set_theta_direction(1)
     ax_r.set_thetamin(-90)
     ax_r.set_thetamax(90)
 
+    # Limites de radio (distancia)
     ax_r.set_rlim(0, 400)
     ax_r.set_rticks(range(0, 401, 50))
     ax_r.set_yticklabels([str(r) for r in range(0, 401, 50)],
                          color="#00ff80", fontsize=9)
 
+    # Marcas de ángulo cada 30°
     ang_ticks = np.deg2rad(np.arange(-90, 91, 30))
     ax_r.set_xticks(ang_ticks)
     ax_r.set_xticklabels([f"{deg}°" for deg in range(-90, 91, 30)],
@@ -618,6 +692,7 @@ def abrir_radar():
 
     ax_r.set_title("Radar ultrasónico", color='lime', pad=20)
 
+    # Texto informativo sobre el último eco
     info_text = ax_r.text(0.5, 0.96, "", transform=ax_r.transAxes,
                           ha="center", va="bottom", color="white", fontsize=10)
 
@@ -627,8 +702,10 @@ def abrir_radar():
     canvas_r.draw()
     canvas_r.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
+    # Línea principal del haz
     beam_line, = ax_r.plot([], [], color="#00ff80", linewidth=2)
 
+    # Líneas de “rastro” del haz
     trail_length = 30
     trail_lines = []
     for i_local in range(trail_length):
@@ -636,13 +713,19 @@ def abrir_radar():
         line, = ax_r.plot([], [], color="#00ff80", linewidth=1.2, alpha=alpha)
         trail_lines.append(line)
 
+    # Scatter para ecos (puntos detectados)
     echo_scatter = ax_r.scatter([], [], s=40, c="#00ff00")
 
     frame_counter = {"n": 0}
 
     def actualizar_radar_local():
+        """
+        Simula barrido del haz y muestra ecos almacenados en radar_echoes.
+        Se llama periódicamente con window.after.
+        """
         frame_counter["n"] += 1
 
+        # Barrido de -90 a 90 grados
         angle_deg = -90 + (frame_counter["n"] * 2.0) % 180
         angle = math.radians(angle_deg)
 
@@ -650,6 +733,7 @@ def abrir_radar():
         theta = np.full_like(r, angle)
         beam_line.set_data(theta, r)
 
+        # Desplazar datos para el efecto de estela
         prev_theta, prev_r = beam_line.get_data()
         last_theta, last_r = prev_theta, prev_r
         for line in trail_lines:
@@ -657,6 +741,7 @@ def abrir_radar():
             line.set_data(last_theta, last_r)
             last_theta, last_r = lt, lr
 
+        # Gestionar lista de ecos y su “edad”
         if radar_echoes:
             vivos = []
             for eco in radar_echoes:
@@ -691,7 +776,10 @@ def abrir_radar():
 
     actualizar_radar_local()
 
+# Crear radar al inicio
 abrir_radar()
+
+# ----- Controles del radar (servo y ultrasonidos) -----
 
 Label(radar_ctrl_frame, text="Ángulo servo (0-180°):",
       bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
@@ -705,6 +793,7 @@ Entry(radar_ctrl_frame, textvariable=anguloVar, width=6,
 )
 
 def enviar_angulo():
+    """Envía un ángulo de servo al Arduino por serie."""
     try:
         ang = int(anguloVar.get())
         if 0 <= ang <= 180:
@@ -727,6 +816,7 @@ Spinbox(radar_ctrl_frame, from_=50, to=10000, textvariable=intervaloUltraVar, wi
 )
 
 def send_intervalo_ultra():
+    """Envía el intervalo de medición del ultrasonido al Arduino."""
     try:
         ms = int(intervaloUltraVar.get())
         mySerial.write(f"7:{ms}\n".encode())
@@ -746,10 +836,12 @@ Button(radar_ctrl_frame, text="Enviar intervalo ultra", command=send_intervalo_u
     row=2, column=1, pady=4, padx=4, sticky="w"
 )
 
+# Asociar este frame de control al radar para que aparezca en fullscreen
 register_controls_frame(frame_radar, radar_ctrl_frame)
 radar_ctrl_frame.grid_remove()
 
 # =================== 3) GRÁFICAS ===================
+
 add_fullscreen_header(frame_graf, "Gráficas / Medias / DHT / Control")
 
 graf_outer = Frame(frame_graf, bg=CARD_BG)
@@ -763,6 +855,7 @@ content_graf.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
 content_graf.grid_rowconfigure(0, weight=1)
 content_graf.grid_columnconfigure(0, weight=1)
 
+# Figura con 3 subgráficos: Temp, Humedad y Media móvil
 fig = Figure(figsize=(4.0, 2.7), dpi=100)
 gs = fig.add_gridspec(3, 1, height_ratios=[2.0, 1.0, 1.0])
 ax1 = fig.add_subplot(gs[0, 0])
@@ -793,6 +886,7 @@ canvas = FigureCanvasTkAgg(fig, master=content_graf)
 canvas.draw()
 canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
+# ----- Panel de control de gráficas / DHT -----
 cont_inner = Frame(graf_outer, bg="black")
 cont_inner.grid(row=1, column=0, sticky="nsew", padx=4, pady=(8, 0))
 
@@ -842,6 +936,7 @@ Spinbox(cont_inner, from_=1, to=3600, textvariable=intervaloDHTVar, width=6,
 )
 
 def send_intervalo_dht():
+    """Envía el intervalo de lectura DHT al Arduino."""
     try:
         s = int(intervaloDHTVar.get())
         mySerial.write(f"1:{s}\n".encode())
@@ -853,13 +948,16 @@ Label(cont_inner, text="Dónde calcular la media:",
       bg="black", fg=TEXT_FG, font=LABEL_FONT).grid(
     row=4, column=0, sticky="w", pady=(8, 2)
 )
+
 modoVar = StringVar(value="python")
 
 def modo_media_changed():
+    """Cambia entre media calculada en Python o en Arduino."""
     global modo_media
     modo_media = modoVar.get()
     if modo_media == "arduino":
         try:
+            # Activar cálculo de media en Arduino
             mySerial.write(b"8:1\n")
             time.sleep(0.05)
             n = int(ventanaVar.get())
@@ -868,6 +966,7 @@ def modo_media_changed():
             pass
     else:
         try:
+            # Desactivar cálculo de media en Arduino (usar Python)
             mySerial.write(b"8:0\n")
         except:
             pass
@@ -893,7 +992,10 @@ alarma_media_label.grid(row=5, column=1, sticky="w", padx=(4, 4), pady=(8, 2))
 
 row_btn = 6
 
+# ----- Botones de control principal (lectura, stop, reset) -----
+
 def IniciarClick():
+    """Inicia la lectura periódica desde el puerto serie."""
     global lectura_activa
     lectura_activa = True
     try:
@@ -903,6 +1005,7 @@ def IniciarClick():
     ciclo_lectura()
 
 def PararClick():
+    """Detiene la lectura periódica desde el puerto serie."""
     global lectura_activa
     lectura_activa = False
     try:
@@ -911,6 +1014,7 @@ def PararClick():
         pass
 
 def ResetClick():
+    """Resetea todas las series de datos y estados de alerta."""
     global temperaturas, humedades, eje_x, media_movil, i
     global radar_echoes, alerta_activa, alerta_media_activa
     global x_orbit, y_orbit, z_orbit
@@ -953,14 +1057,18 @@ Button(cont_inner, text="Enviar intervalos DHT+Ultra",
     row=row_btn, column=0, columnspan=3, pady=BTN_PADY, padx=2, sticky="w"
 )
 
+# Asociar este panel de control al frame de gráficas (para fullscreen)
 register_controls_frame(frame_graf, cont_inner)
 cont_inner.grid_remove()
 
-# =================== Funciones de gráfico y lectura serie ===================
+# =================== Funciones de dibujo y lectura serie ===================
+
 def actualizar_graficas(force=False):
+    """Actualiza las líneas de temperatura, humedad y media móvil."""
     line_temp.set_data(eje_x, temperaturas)
     line_hum.set_data(eje_x, humedades)
 
+    # Limpiar NaN para la media
     media_plot = []
     for m in media_movil:
         if m is None or (isinstance(m, float) and math.isnan(m)):
@@ -977,6 +1085,10 @@ def actualizar_graficas(force=False):
     canvas.draw()
 
 def leer_serial():
+    """
+    Lee todos los mensajes disponibles del puerto serie, los interpreta y
+    actualiza las estructuras de datos de gráficas, radar y órbita.
+    """
     global i, alerta_activa, alerta_media_activa, last_angle_received, last_dht_accepted_ms
 
     try:
@@ -985,6 +1097,7 @@ def leer_serial():
             if not raw:
                 continue
 
+            # Soporte para mensajes con checksum prefijados con "CHK:"
             if raw.startswith("CHK:"):
                 try:
                     partes = raw.split(':')
@@ -1005,8 +1118,10 @@ def leer_serial():
             trozos = raw.split(':')
             now_ms = int(time.time() * 1000)
 
+            # Mensajes tipo 1: DHT (temperatura/humedad)
             if len(trozos) >= 3 and trozos[0] == '1':
                 intervalo_ms = max(0, int(intervaloDHTVar.get())) * 1000
+                # Filtro por intervalo mínimo entre muestras aceptadas
                 if intervalo_ms == 0 or now_ms - last_dht_accepted_ms >= intervalo_ms:
                     last_dht_accepted_ms = now_ms
                     try:
@@ -1019,6 +1134,7 @@ def leer_serial():
                     humedades.append(hum)
                     i += 1
 
+                    # Cálculo de media móvil local o uso de valor remoto
                     N = max(1, int(ventanaVar.get()))
                     if modoVar.get() == "arduino" and len(trozos) >= 5 and trozos[3] == 'A':
                         try:
@@ -1030,6 +1146,7 @@ def leer_serial():
                         media_movil.append(
                             sum(temperaturas[-N:]) / N if len(temperaturas) >= N else float('nan'))
 
+                    # Alertas de temperatura instantánea (últimas 3 muestras)
                     if len(temperaturas) >= 3 and all(
                             x > float(limiteVar.get()) for x in temperaturas[-3:]) and not alerta_activa:
                         alerta_activa = True
@@ -1040,6 +1157,7 @@ def leer_serial():
                             x > float(limiteVar.get()) for x in temperaturas[-3:]):
                         alerta_activa = False
 
+                    # Alertas basadas en la media móvil (últimas 3 medias válidas)
                     medias_validas = [m for m in media_movil if not (isinstance(m, float) and math.isnan(m))]
                     if len(medias_validas) >= 3 and all(
                             m > float(limiteVar.get()) for m in medias_validas[-3:]):
@@ -1049,6 +1167,7 @@ def leer_serial():
                         alerta_media_activa = False
                         alarma_media_label.config(text="Normal", bg="lightgreen")
 
+            # Mensajes tipo 2: Radar (ángulo y distancia)
             elif len(trozos) >= 3 and trozos[0] == '2':
                 try:
                     ang = float(trozos[1])
@@ -1064,15 +1183,23 @@ def leer_serial():
                 except Exception as e:
                     registrar_evento("ERRORES", f"Radar inválido: {raw} ({e})")
 
+            # Mensajes tipo 3: fallo DHT
             elif trozos[0] == '3':
                 registrar_evento("ERRORES", "Satélite: fallo DHT")
+
+            # Mensajes tipo 5: info genérica de satélite
             elif trozos[0] == '5':
                 registrar_evento("INFO SATELITE", "Satélite msg: " + ":".join(trozos[1:]))
+
+            # Mensajes tipo 6: fallo sensor distancia
             elif trozos[0] == '6':
                 registrar_evento("ERRORES", "Satélite: fallo sensor distancia")
+
+            # Otros mensajes no clasificados
             else:
                 registrar_evento("INFO SATELITE", "Otro mensaje: " + raw)
 
+            # Intentar extraer datos de órbita con la regex
             match = regex_orbit.search(raw)
             if match:
                 try:
@@ -1092,12 +1219,14 @@ def leer_serial():
         registrar_evento("ERRORES", f"Error puerto serie: {e}")
 
 def ciclo_lectura():
+    """Bucle periódico: lee serie y actualiza gráficas mientras lectura_activa sea True."""
     if lectura_activa:
         leer_serial()
         actualizar_graficas()
         window.after(120, ciclo_lectura)
 
 def on_close():
+    """Manejador al cerrar la ventana principal: cierra puerto serie y destruye GUI."""
     global lectura_activa
     lectura_activa = False
     try:
@@ -1106,5 +1235,8 @@ def on_close():
         pass
     window.destroy()
 
+# Asociar cierre de ventana con on_close
 window.protocol("WM_DELETE_WINDOW", on_close)
+
+# Iniciar bucle principal de Tkinter
 window.mainloop()
