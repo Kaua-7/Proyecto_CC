@@ -1,14 +1,13 @@
-# 🚀 Proyecto Grupo 9
+#  Proyecto Grupo 9
 
 Repositorio con los códigos y recursos del **Proyecto del Grupo 9**, formado por **Jan Fernández**, **Kaua Vieira** e **Ingrid Rojano**. El proyecto simula y monitoriza un satélite con sensores, comunicación inalámbrica, estación de tierra e interfaz gráfica con visualización avanzada.
 
 ---
 
-## 📌 Estado del proyecto
+##  Estado del proyecto
 
-* **Última versión publicada:** v3
-* **Funciones descritas a continuación:** v4 (en desarrollo / próxima publicación)
-
+* **Última versión publicada:** verión 4
+  
 ---
 
 ##  Índice
@@ -30,7 +29,7 @@ Repositorio con los códigos y recursos del **Proyecto del Grupo 9**, formado po
 El sistema está dividido en **tres bloques principales**:
 
 * **Satélite (Arduino):** Captura datos ambientales y de distancia, los procesa y los envía inalámbricamente.
-* **Estación de tierra:** Recibe los datos, valida la comunicación y actúa como puente hacia la interfaz gráfica.
+* **Estación de tierra (Arduino):** Recibe los datos, valida la comunicación y actúa como puente hacia la interfaz gráfica.
 * **Interfaz gráfica (Python):** Visualiza los datos, permite la interacción del usuario y gestiona alarmas y registros.
 
 ---
@@ -128,9 +127,9 @@ Cada evento queda registrado junto con su **fecha y hora**, garantizando trazabi
 
 ##  Vídeos del proyecto
 
-* ▶️ **Versión 1**
-* ▶️ **Versión 2**
-* ▶️ **Versión 3**
+* ▶️ **[Versión 1](https://youtu.be/JMYqD_PEAVs)**
+* ▶️ **[Versión 2](https://youtu.be/Pue14OJ23Xw)**
+* ▶️ **[Versión 3](https://youtu.be/bo64HEpI_m8)**
 * ▶️ **Versión 4**
 
 ---
