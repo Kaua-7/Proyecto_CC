@@ -17,7 +17,7 @@ import datetime
 import os
 
 # =================== CONFIG ===================
-device = 'COM6'  # Cambia al puerto correcto
+device = 'COM5'  # Cambia al puerto correcto
 MAP_IMAGE_PATH = r"C:\Users\kauav\Desktop\Versión 4\earth_hd.jpg"
 
 FIGSIZE_ORBIT_NORMAL = (6, 3.2)
@@ -100,6 +100,7 @@ LOG_FILE = "eventos.log"
 log_lines = []  # (timestamp, tipo, texto)
 log_filter_tipo = "TODOS"
 
+
 def registrar_evento(tipo, descripcion):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     linea = f"{timestamp} | {tipo} | {descripcion}"
@@ -113,10 +114,12 @@ def registrar_evento(tipo, descripcion):
     if len(log_lines) > MAX_LOG_LINES:
         del log_lines[0]
 
+
 def filtrar_logs_por_tipo():
     if log_filter_tipo == "TODOS":
         return log_lines
     return [l for l in log_lines if l[1] == log_filter_tipo]
+
 
 def set_axes_equal(ax):
     limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
@@ -154,6 +157,7 @@ for f in (frame_mapa, frame_radar, frame_graf):
     f.grid_rowconfigure(0, weight=0)
     f.grid_rowconfigure(1, weight=1)
     f.grid_columnconfigure(0, weight=1)
+
 
 def add_header(frame, title_text):
     header = Frame(frame, bg=CARD_BG, bd=0, highlightthickness=0)
@@ -210,7 +214,6 @@ def abrir_simulacion_orbital():
     sim.title("Simulación Orbital (Datos reales)")
     sim.configure(bg="SystemButtonFace")
     sim.state("zoomed")
-
     sim.grid_rowconfigure(0, weight=0)
     sim.grid_rowconfigure(1, weight=1)
     sim.grid_rowconfigure(2, weight=1)
@@ -403,7 +406,6 @@ def abrir_simulacion_orbital():
         def actualizar_mapa():
             if len(x_orbit) != last_len["n"] and x_orbit and y_orbit and z_orbit:
                 last_len["n"] = len(x_orbit)
-
                 lats_real = []
                 lons_real = []
                 for X, Y, Z in zip(x_orbit, y_orbit, z_orbit):
@@ -465,7 +467,7 @@ btn_sim = Button(map_header,
                  command=abrir_simulacion_orbital)
 btn_sim.grid(row=0, column=2, sticky="e", padx=(0, 4))
 
-# Observaciones: label nuevo + entry + botón
+# Observaciones
 Label(map_header, text="Observaciones:",
       bg=CARD_BG, fg=TEXT_FG, font=("Segoe UI", 8)).grid(
     row=1, column=0, sticky="w", padx=8, pady=(2, 1)
@@ -594,7 +596,6 @@ def abrir_radar():
     canvas_r.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
     beam_line, = ax_r.plot([], [], color="lime", linewidth=2)
-
     trail_length = 30
     trail_lines = []
     for i_local in range(trail_length):
@@ -609,7 +610,7 @@ def abrir_radar():
     def actualizar_radar_local():
         frame_counter["n"] += 1
 
-        # El barrido visual siempre activo (solo es animación local)
+        # Animación local de barrido (independiente del servo real)
         angle_deg = -90 + (frame_counter["n"] * 2.0) % 180
         angle = math.radians(angle_deg)
         r = np.linspace(0, 400, 200)
@@ -714,17 +715,17 @@ Button(radar_ctrl_frame, text="Intervalo ultra", command=send_intervalo_ultra,
 )
 
 def detener_barrido_servo():
-    # case 6 del satélite: modoBarrido = false si recibe "6:0"
+    # Nuevo: comando 60 → detener barrido
     try:
-        mySerial.write(b"6:0\n")
+        mySerial.write(b"60\n")
         registrar_evento("COMANDOS", "Detener barrido servo (satélite)")
     except:
         messagebox.showerror("Error", "No se pudo enviar comando de detener barrido")
 
 def reanudar_barrido_servo():
-    # case 6 del satélite: modoBarrido = true si recibe "6:1"
+    # Nuevo: comando 61 → reanudar barrido
     try:
-        mySerial.write(b"6:1\n")
+        mySerial.write(b"61\n")
         registrar_evento("COMANDOS", "Reanudar barrido servo (satélite)")
     except:
         messagebox.showerror("Error", "No se pudo enviar comando de reanudar barrido")
@@ -743,7 +744,7 @@ Button(radar_ctrl_frame, text="Reanudar barrido servo",
     row=2, column=3, pady=4, padx=2, sticky="w"
 )
 
-# ---------- GRÁFICAS (controles pequeños, una columna) ----------
+# ---------- GRÁFICAS / CONTROL DHT ----------
 graf_header = add_header(frame_graf, "Gráficas / Medias / DHT / Control")
 
 graf_outer = Frame(frame_graf, bg=CARD_BG)
@@ -933,7 +934,7 @@ def ResetClick():
     alerta_media_activa = False
     alarma_media_label.config(text="Normal", bg=OK_COLOR)
     try:
-        mySerial.write(b'6:1\n')
+        mySerial.write(b'61\n')   # al reset, reanuda barrido
     except:
         pass
     actualizar_graficas(force=True)
@@ -985,7 +986,6 @@ def actualizar_graficas(force=False):
 
 def leer_serial():
     global i, alerta_activa, alerta_media_activa, last_angle_received, last_dht_accepted_ms
-
     try:
         while mySerial.in_waiting > 0:
             raw = mySerial.readline().decode('utf-8', errors='ignore').strip()
@@ -1012,6 +1012,7 @@ def leer_serial():
             trozos = raw.split(':')
             now_ms = int(time.time() * 1000)
 
+            # DHT
             if len(trozos) >= 3 and trozos[0] == '1':
                 intervalo_ms = max(0, int(intervaloDHTVar.get())) * 1000
                 if intervalo_ms == 0 or now_ms - last_dht_accepted_ms >= intervalo_ms:
@@ -1056,6 +1057,7 @@ def leer_serial():
                         alerta_media_activa = False
                         alarma_media_label.config(text="Normal", bg=OK_COLOR)
 
+            # Radar
             elif len(trozos) >= 3 and trozos[0] == '2':
                 try:
                     ang = float(trozos[1])
@@ -1071,6 +1073,7 @@ def leer_serial():
                 except Exception as e:
                     registrar_evento("ERRORES", f"Radar inválido: {raw} ({e})")
 
+            # Errores y mensajes del satélite
             elif trozos[0] == '3':
                 registrar_evento("ERRORES", "Satélite: fallo DHT")
             elif trozos[0] == '5':
@@ -1078,22 +1081,20 @@ def leer_serial():
             elif trozos[0] == '6':
                 registrar_evento("ERRORES", "Satélite: fallo sensor distancia")
             else:
-                registrar_evento("INFO SATELITE", "Otro mensaje: " + raw)
-
-            match = regex_orbit.search(raw)
-            if match:
-                try:
-                    x_orbit.append(float(match.group(1)))
-                    y_orbit.append(float(match.group(2)))
-                    z_orbit.append(float(match.group(3)))
-
-                    if len(x_orbit) > MAX_ORBIT_POINTS:
-                        x_orbit[:] = x_orbit[-MAX_ORBIT_POINTS:]
-                        y_orbit[:] = y_orbit[-MAX_ORBIT_POINTS:]
-                        z_orbit[:] = z_orbit[-MAX_ORBIT_POINTS:]
-                except ValueError:
-                    registrar_evento("ERRORES", f"Órbita inválida: {raw}")
-
+                match = regex_orbit.search(raw)
+                if match:
+                    try:
+                        x_orbit.append(float(match.group(1)))
+                        y_orbit.append(float(match.group(2)))
+                        z_orbit.append(float(match.group(3)))
+                        if len(x_orbit) > MAX_ORBIT_POINTS:
+                            x_orbit[:] = x_orbit[-MAX_ORBIT_POINTS:]
+                            y_orbit[:] = y_orbit[-MAX_ORBIT_POINTS:]
+                            z_orbit[:] = z_orbit[-MAX_ORBIT_POINTS:]
+                    except ValueError:
+                        registrar_evento("ERRORES", f"Órbita inválida: {raw}")
+                else:
+                    registrar_evento("INFO SATELITE", f"Otro mensaje: {raw}")
     except serial.SerialException as e:
         print("Error puerto serie:", e)
         registrar_evento("ERRORES", f"Error puerto serie: {e}")
